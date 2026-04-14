@@ -77,8 +77,6 @@ json !member
 
 blockchain insert where policy = !member and local = true and master = !ledger_conn
 
-
-tpm_url = tpm- + !tpm_ip + : + !tpm_port
 id create keys for node where password = abc
 
 <member = {"member" : {
@@ -89,7 +87,7 @@ id create keys for node where password = abc
     }
 }>
 
-id sign !member where key = node 
+id sign !member where key = node and password = abc
 
 json !member
 
@@ -122,7 +120,7 @@ permission_id =  blockchain get permissions where name = "node basic permissions
         }
 }>
 
-id sign !assignment where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !assignment where key = !root_key_file and password = 123
 
 json !assignment 
 
@@ -130,7 +128,7 @@ blockchain insert where policy = !assignment and local = true  and master = !led
 ```
 ## ON MASTER
 ```
-id create keys for node where password = tpm-192.168.86.31:8001/
+id create keys for node where password = xyz
 
 <member = {"member" : {  
     "type" : "node",  
@@ -138,7 +136,7 @@ id create keys for node where password = tpm-192.168.86.31:8001/
     }  
 }>  
 
-id sign !member where password = tpm-192.168.86.31:8001/
+id sign !member where key = node and password = xyz
 
 json !member
 
@@ -152,7 +150,7 @@ blockchain insert where policy = !member and local = true and master = !ledger_c
     }
 }>
 
-id sign !permissions where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !permissions where key = !root_key_file and password = 123
 
 json !permissions
 
@@ -169,7 +167,7 @@ member_node = blockchain get member where name = master_node bring ['member']['p
         }
 }>
 
-id sign !assignment where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !assignment where key = !root_key_file and password = 123
 
 json !assignment 
 
