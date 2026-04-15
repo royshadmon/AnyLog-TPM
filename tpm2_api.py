@@ -217,7 +217,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def create_primary_key(self, hierarchy: str = "o", context_file: str = "primary.ctx", 
+    def create_primary_key(self, password: str, hierarchy: str = "o", context_file: str = "primary.ctx",
                           key_size: int = 1024) -> Dict[str, Any]:
         """
         Create a primary key in the specified hierarchy
@@ -241,7 +241,8 @@ class TPM2API:
                 '-C', hierarchy,
                 '-c', context_file,
                 '-G', key_alg,
-                '-g', 'sha256'
+                '-g', 'sha256',
+                '-p', password
             ]
             
             result = self._run_command(cmd)
@@ -270,7 +271,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def create_key(self, parent_context: str, key_type: str = "rsa", 
+    def create_key(self, parent_context: str, password: str, key_type: str = "rsa",
                    public_file: str = "key.pub", private_file: str = "key.priv",
                    key_size: int = 1024) -> Dict[str, Any]:
         """
@@ -308,18 +309,22 @@ class TPM2API:
                 cmd = [
                     'tpm2_create',
                     '-C', parent_context,
+                    '-P', password,
                     '-G', key_alg,
                     '-u', public_file,
-                    '-r', private_file
+                    '-r', private_file,
+                    '-p', password
                 ]
             elif key_type.lower() == "ecc":
                 key_alg = "ecc256"
                 cmd = [
                     'tpm2_create',
                     '-C', parent_context,
+                    '-P', password,
                     '-G', key_alg,
                     '-u', public_file,
-                    '-r', private_file
+                    '-r', private_file,
+                    '-p', password
                 ]
             elif key_type.lower() in ["aes128", "aes256"]:
                 # For AES keys, we use tpm2_create to create a symmetric key with proper attributes
@@ -330,9 +335,11 @@ class TPM2API:
                 cmd = [
                     'tpm2_create',
                     '-C', parent_context,
+                    '-P', password,
                     '-G', f'aes{key_size}',
                     '-u', aes_pub_file,  # Public portion
-                    '-r', aes_priv_file  # Private portion
+                    '-r', aes_priv_file, # Private portion
+                    '-p', password
                 ]
             else:
                 return {"success": False, "error": f"Unsupported key type: {key_type}"}
@@ -346,7 +353,13 @@ class TPM2API:
                     context_file = public_file if public_file.endswith('.ctx') else public_file + '.ctx'
                     
                     # Load the AES key to create a context file
-                    load_result = self.load_key(parent_context, aes_pub_file, aes_priv_file, context_file)
+                    load_result = self.load_key(
+                        parent_context,
+                        aes_pub_file,
+                        aes_priv_file,
+                        password,
+                        context_file
+                    )
                     
                     if load_result['success']:
                         # Collect recovery material so clients can securely back up the AES key blobs
@@ -406,7 +419,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def load_key(self, parent_context: str, public_file: str, private_file: str,
+    def load_key(self, parent_context: str, public_file: str, private_file: str, password: str,
                  context_file: str = "loaded_key.ctx") -> Dict[str, Any]:
         """
         Load a key into TPM context
@@ -424,6 +437,7 @@ class TPM2API:
             cmd = [
                 'tpm2_load',
                 '-C', parent_context,
+                '-P', password,
                 '-u', public_file,
                 '-r', private_file,
                 '-c', context_file
@@ -444,7 +458,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def import_key(self, parent_context: str, key_type: str, private_key_file: str,
+    def import_key(self, parent_context: str, key_type: str, private_key_file: str, password: str,
                    public_file: str = "imported_key.pub", private_file: str = "imported_key.priv") -> Dict[str, Any]:
         """
         Import an externally generated key into TPM format
@@ -470,10 +484,12 @@ class TPM2API:
             cmd = [
                 'tpm2_import',
                 '-C', parent_context,
+                '-P', password,
                 '-G', key_alg,
                 '-i', private_key_file,
                 '-u', public_file,
-                '-r', private_file
+                '-r', private_file,
+                '-p', password
             ]
             
             result = self._run_command(cmd)
@@ -493,7 +509,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def make_persistent(self, context_file: str, persistent_handle: int = 0x81010001) -> Dict[str, Any]:
+    def make_persistent(self, context_file: str, password: str, persistent_handle: int = 0x81010001) -> Dict[str, Any]:
         """
         Make a key persistent in TPM
         
@@ -508,6 +524,7 @@ class TPM2API:
             cmd = [
                 'tpm2_evictcontrol',
                 '-C', 'o',
+                '-P', password,
                 '-c', context_file,
                 str(persistent_handle)
             ]
@@ -593,7 +610,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def sign_data(self, context_file: str, data: str, signature_file: str = "signature.sig", 
+    def sign_data(self, context_file: str, data: str, password: str, signature_file: str = "signature.sig",
                   output_format: str = "hex") -> Dict[str, Any]:
         """
         Sign data using a loaded key
@@ -629,6 +646,7 @@ class TPM2API:
                     '-g', 'sha256',
                     '-s', 'rsapss',  # Use PSS padding to match AnyLog's padding.PSS
                     '-o', signature_file,
+                    '-p', password,
                     temp_data_file  # Message file as positional argument
                 ]
                 
@@ -678,7 +696,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def read_public_key(self, context_file: str, output_format: str = "pem", 
+    def read_public_key(self, context_file: str, output_format: str = "pem",
                        standardize: bool = True) -> Dict[str, Any]:
         """
         Read the public key from a loaded key context
@@ -926,7 +944,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def decrypt_data(self, context_file: str, encrypted_data: str, decrypted_file: str = "decrypted.bin") -> Dict[str, Any]:
+    def decrypt_data(self, context_file: str, encrypted_data: str, password: str, decrypted_file: str = "decrypted.bin") -> Dict[str, Any]:
         """
         Decrypt data using a loaded RSA key
         
@@ -952,6 +970,7 @@ class TPM2API:
                     'tpm2_rsadecrypt',
                     '-c', context_file,
                     '-o', decrypted_file,
+                    '-p', password,
                     temp_encrypted_file
                 ]
                 
@@ -978,7 +997,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def encrypt_data_aes(self, context_file: str, data: str, encrypted_file: str = "encrypted_aes.bin") -> Dict[str, Any]:
+    def encrypt_data_aes(self, context_file: str, data: str, password: str, encrypted_file: str = "encrypted_aes.bin") -> Dict[str, Any]:
         """
         Encrypt data using a loaded AES key
         
@@ -1017,6 +1036,7 @@ class TPM2API:
                     '--mode', 'cfb',  # Explicitly specify CFB mode for AES
                     '--pad',  # Enable PKCS7 padding for AES block ciphers
                     '-o', encrypted_file,
+                    '-p', password,
                     temp_data_file,
                 ]
                 
@@ -1043,7 +1063,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def decrypt_data_aes(self, context_file: str, encrypted_data: str, decrypted_file: str = "decrypted_aes.bin") -> Dict[str, Any]:
+    def decrypt_data_aes(self, context_file: str, encrypted_data: str, password: str, decrypted_file: str = "decrypted_aes.bin") -> Dict[str, Any]:
         """
         Decrypt data using a loaded AES key
         
@@ -1100,6 +1120,7 @@ class TPM2API:
                     '-d',  # Decrypt mode
                     '--mode', 'cfb',  # Explicitly specify CFB mode for AES
                     '-o', decrypted_file,
+                    '-p', password,
                     temp_encrypted_file  # Input file as last argument
                 ]
 
@@ -1158,7 +1179,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def store_key_value(self, context_file: str, store_name: str, key: str, value: Any) -> Dict[str, Any]:
+    def store_key_value(self, context_file: str, store_name: str, key: str, value: Any, password: str) -> Dict[str, Any]:
         """
         Store a key-value pair in the encrypted file store
         
@@ -1181,7 +1202,8 @@ class TPM2API:
                 # Decrypt the data
                 decrypt_result = self.decrypt_data(
                     context_file, 
-                    base64.b64encode(encrypted_data).decode(), 
+                    base64.b64encode(encrypted_data).decode(),
+                    password,
                     "temp_decrypted.json"
                 )
                 
@@ -1228,7 +1250,7 @@ class TPM2API:
                 os.unlink("temp_decrypted.json")
             return {"success": False, "error": str(e)}
 
-    def retrieve_key_value(self, context_file: str, store_name: str, key: str) -> Dict[str, Any]:
+    def retrieve_key_value(self, context_file: str, store_name: str, key: str, password: str) -> Dict[str, Any]:
         """
         Retrieve a key-value pair from the encrypted file store
         
@@ -1251,7 +1273,8 @@ class TPM2API:
             # Decrypt the data
             decrypt_result = self.decrypt_data(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 "temp_decrypted.json"
             )
             
@@ -1286,7 +1309,7 @@ class TPM2API:
                 os.unlink("temp_decrypted.json")
             return {"success": False, "error": str(e)}
 
-    def list_file_store_keys(self, context_file: str, store_name: str) -> Dict[str, Any]:
+    def list_file_store_keys(self, context_file: str, store_name: str, password: str) -> Dict[str, Any]:
         """
         List all keys in the encrypted file store
         
@@ -1308,7 +1331,8 @@ class TPM2API:
             # Decrypt the data
             decrypt_result = self.decrypt_data(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 "temp_decrypted.json"
             )
             
@@ -1336,7 +1360,7 @@ class TPM2API:
                 os.unlink("temp_decrypted.json")
             return {"success": False, "error": str(e)}
 
-    def delete_key_value(self, context_file: str, store_name: str, key: str) -> Dict[str, Any]:
+    def delete_key_value(self, context_file: str, store_name: str, key: str, password: str) -> Dict[str, Any]:
         """
         Delete a key-value pair from the encrypted file store
         
@@ -1359,7 +1383,8 @@ class TPM2API:
             # Decrypt the data
             decrypt_result = self.decrypt_data(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 "temp_decrypted.json"
             )
             
@@ -1412,7 +1437,7 @@ class TPM2API:
                 os.unlink("temp_decrypted.json")
             return {"success": False, "error": str(e)}
 
-    def create_encrypted_file_store_aes(self, context_file: str, store_name: str = "file_store_aes.json") -> Dict[str, Any]:
+    def create_encrypted_file_store_aes(self, context_file: str, password: str, store_name: str = "file_store_aes.json") -> Dict[str, Any]:
         """
         Create a new encrypted file store using AES encryption
         
@@ -1429,7 +1454,7 @@ class TPM2API:
             json_data = json.dumps(empty_store, indent=2)
             
             # Encrypt the empty JSON using AES
-            result = self.encrypt_data_aes(context_file, base64.b64encode(json_data.encode()).decode(), store_name)
+            result = self.encrypt_data_aes(context_file, base64.b64encode(json_data.encode()).decode(), password, store_name)
             
             if result['success']:
                 return {
@@ -1444,7 +1469,7 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def store_key_value_aes(self, context_file: str, store_name: str, key: str, value: Any) -> Dict[str, Any]:
+    def store_key_value_aes(self, context_file: str, store_name: str, key: str, value: Any, password: str) -> Dict[str, Any]:
         """
         Store a key-value pair in the AES encrypted file store
         
@@ -1467,7 +1492,8 @@ class TPM2API:
                 # Decrypt the data using AES
                 decrypt_result = self.decrypt_data_aes(
                     context_file, 
-                    base64.b64encode(encrypted_data).decode(), 
+                    base64.b64encode(encrypted_data).decode(),
+                    password,
                     TEMP_DECRYPTED_AES_FILE
                 )
                 
@@ -1490,6 +1516,7 @@ class TPM2API:
             encrypt_result = self.encrypt_data_aes(
                 context_file, 
                 base64.b64encode(json_data.encode()).decode(), 
+                password,
                 store_name
             )
             
@@ -1513,7 +1540,7 @@ class TPM2API:
             self._cleanup_temp_decrypted_file()
             return {"success": False, "error": str(e)}
 
-    def retrieve_key_value_aes(self, context_file: str, store_name: str, key: str) -> Dict[str, Any]:
+    def retrieve_key_value_aes(self, context_file: str, store_name: str, key: str, password: str) -> Dict[str, Any]:
         """
         Retrieve a key-value pair from the AES encrypted file store
         
@@ -1536,7 +1563,8 @@ class TPM2API:
             # Decrypt the data using AES
             decrypt_result = self.decrypt_data_aes(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 TEMP_DECRYPTED_AES_FILE
             )
             
@@ -1571,7 +1599,7 @@ class TPM2API:
             self._cleanup_temp_decrypted_file()
             return {"success": False, "error": str(e)}
 
-    def list_file_store_keys_aes(self, context_file: str, store_name: str) -> Dict[str, Any]:
+    def list_file_store_keys_aes(self, context_file: str, store_name: str, password: str) -> Dict[str, Any]:
         """
         List all keys in the AES encrypted file store
         
@@ -1593,7 +1621,8 @@ class TPM2API:
             # Decrypt the data using AES
             decrypt_result = self.decrypt_data_aes(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 TEMP_DECRYPTED_AES_FILE
             )
             
@@ -1621,7 +1650,7 @@ class TPM2API:
             self._cleanup_temp_decrypted_file()
             return {"success": False, "error": str(e)}
 
-    def delete_key_value_aes(self, context_file: str, store_name: str, key: str) -> Dict[str, Any]:
+    def delete_key_value_aes(self, context_file: str, store_name: str, key: str, password: str) -> Dict[str, Any]:
         """
         Delete a key-value pair from the AES encrypted file store
         
@@ -1644,7 +1673,8 @@ class TPM2API:
             # Decrypt the data using AES
             decrypt_result = self.decrypt_data_aes(
                 context_file, 
-                base64.b64encode(encrypted_data).decode(), 
+                base64.b64encode(encrypted_data).decode(),
+                password,
                 TEMP_DECRYPTED_AES_FILE
             )
 
@@ -1674,6 +1704,7 @@ class TPM2API:
             encrypt_result = self.encrypt_data_aes(
                 context_file, 
                 base64.b64encode(json_data.encode()).decode(), 
+                password,
                 store_name
             )
             
@@ -1697,7 +1728,7 @@ class TPM2API:
             self._cleanup_temp_decrypted_file()
             return {"success": False, "error": str(e)}
 
-    def full_reset(self) -> Dict[str, Any]:
+    def full_reset(self, password: str) -> Dict[str, Any]:
         """
         Perform a complete TPM reset - clears all contexts, persistent objects, and authorizations
         
@@ -1719,7 +1750,7 @@ class TPM2API:
             cleared_persistent = []
             for handle in persistent_handles:
                 try:
-                    cmd = ['tpm2_evictcontrol', '-C', 'o', '-c', str(handle)]
+                    cmd = ['tpm2_evictcontrol', '-C', 'o', '-P', password, '-c', str(handle)]
                     result = self._run_command(cmd)
                     if result['success']:
                         cleared_persistent.append(hex(handle))
@@ -1905,20 +1936,20 @@ if __name__ == "__main__":
     
     # Create primary key
     print("Creating primary key...")
-    result = tpm.create_primary_key()
+    result = tpm.create_primary_key(password="abc")
     print(json.dumps(result, indent=2))
     
     # Create RSA key
     print("\nCreating RSA key...")
-    result = tpm.create_key("primary.ctx", "rsa", "rsa.pub", "rsa.priv")
+    result = tpm.create_key("primary.ctx", "abc", "rsa", "rsa.pub", "rsa.priv")
     print(json.dumps(result, indent=2))
     
     # Load key
     print("\nLoading key...")
-    result = tpm.load_key("primary.ctx", "rsa.pub", "rsa.priv", "rsa.ctx")
+    result = tpm.load_key("primary.ctx", "rsa.pub", "rsa.priv", "abc", "rsa.ctx")
     print(json.dumps(result, indent=2))
     
     # Make persistent
     print("\nMaking key persistent...")
-    result = tpm.make_persistent("rsa.ctx")
+    result = tpm.make_persistent("rsa.ctx", "abc")
     print(json.dumps(result, indent=2)) 

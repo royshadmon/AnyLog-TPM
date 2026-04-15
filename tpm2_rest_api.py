@@ -35,6 +35,7 @@ class PrimaryKeyRequest(BaseModel):
     hierarchy: str = "o"
     context_file: str = "primary.ctx"
     key_size: int = 1024  # RSA key size in bits (1024 or 2048, default: 1024 to match AnyLog)
+    password: str
 
 class CreateKeyRequest(BaseModel):
     parent_context: str
@@ -42,6 +43,7 @@ class CreateKeyRequest(BaseModel):
     public_file: str = "key.pub"
     private_file: str = "key.priv"
     key_size: int = 1024  # RSA key size in bits (1024 or 2048, default: 1024 to match AnyLog)
+    password: str
 
 class ImportKeyRequest(BaseModel):
     parent_context: str
@@ -49,16 +51,19 @@ class ImportKeyRequest(BaseModel):
     private_key_file: str  # External private key file (PEM format)
     public_file: str = "imported_key.pub"
     private_file: str = "imported_key.priv"
+    password: str
 
 class LoadKeyRequest(BaseModel):
     parent_context: str
     public_file: str
     private_file: str
     context_file: str = "loaded_key.ctx"
+    password: str
 
 class PersistentRequest(BaseModel):
     context_file: str
     persistent_handle: Union[int, str] = 0x81010001
+    password: str
     
     @validator('persistent_handle', pre=True)
     def parse_persistent_handle(cls, v):
@@ -88,6 +93,7 @@ class SignDataRequest(BaseModel):
     data: str  # base64 encoded data
     signature_file: str = "signature.sig"
     output_format: str = "hex"  # "hex" (like regular keys) or "base64" (TPM format)
+    password: str
 
 class VerifySignatureRequest(BaseModel):
     context_file: str
@@ -109,6 +115,13 @@ class DecryptDataRequest(BaseModel):
     context_file: str
     encrypted_data: str  # base64 encoded encrypted data
     decrypted_file: str = "decrypted.bin"
+    password: str
+
+class FullResetRequest(BaseModel):
+    password: str
+
+class CompleteWorkFlow(BaseModel):
+    password: str
 
 class CreateFileStoreRequest(BaseModel):
     context_file: str
@@ -119,54 +132,65 @@ class StoreKeyValueRequest(BaseModel):
     store_name: str
     key: str
     value: Any  # Can be any JSON-serializable value
+    password: str
 
 class RetrieveKeyValueRequest(BaseModel):
     context_file: str
     store_name: str
     key: str
+    password: str
 
 class ListFileStoreKeysRequest(BaseModel):
     context_file: str
     store_name: str
+    password: str
 
 class DeleteKeyValueRequest(BaseModel):
     context_file: str
     store_name: str
     key: str
+    password: str
 
 class EncryptDataAESRequest(BaseModel):
     context_file: str
     data: str  # base64 encoded data
     encrypted_file: str = "encrypted_aes.bin"
+    password: str
 
 class DecryptDataAESRequest(BaseModel):
     context_file: str
     encrypted_data: str  # base64 encoded encrypted data
     decrypted_file: str = "decrypted_aes.bin"
+    password: str
 
 class CreateFileStoreAESRequest(BaseModel):
     context_file: str
     store_name: str = "file_store_aes.json"
+    password: str
 
 class StoreKeyValueAESRequest(BaseModel):
     context_file: str
     store_name: str
     key: str
     value: Any  # Can be any JSON-serializable value
+    password: str
 
 class RetrieveKeyValueAESRequest(BaseModel):
     context_file: str
     store_name: str
     key: str
+    password: str
 
 class ListFileStoreKeysAESRequest(BaseModel):
     context_file: str
     store_name: str
+    password: str
 
 class DeleteKeyValueAESRequest(BaseModel):
     context_file: str
     store_name: str
     key: str
+    password: str
 
 class DeleteFileRequest(BaseModel):
     file_path: str  # Relative path to file in working directory
@@ -204,6 +228,7 @@ async def create_primary_key(request: PrimaryKeyRequest):
     
     try:
         result = tpm_api.create_primary_key(
+            password=request.password,
             hierarchy=request.hierarchy,
             context_file=request.context_file,
             key_size=request.key_size
@@ -226,6 +251,7 @@ async def create_key(request: CreateKeyRequest):
     try:
         result = tpm_api.create_key(
             parent_context=request.parent_context,
+            password=request.password,
             key_type=request.key_type,
             public_file=request.public_file,
             private_file=request.private_file,
@@ -251,6 +277,7 @@ async def import_key(request: ImportKeyRequest):
             parent_context=request.parent_context,
             key_type=request.key_type,
             private_key_file=request.private_key_file,
+            password=request.password,
             public_file=request.public_file,
             private_file=request.private_file
         )
@@ -274,6 +301,7 @@ async def load_key(request: LoadKeyRequest):
             parent_context=request.parent_context,
             public_file=request.public_file,
             private_file=request.private_file,
+            password=request.password,
             context_file=request.context_file
         )
         
@@ -294,6 +322,7 @@ async def make_persistent(request: PersistentRequest):
     try:
         result = tpm_api.make_persistent(
             context_file=request.context_file,
+            password=request.password,
             persistent_handle=request.persistent_handle
         )
         
@@ -349,6 +378,7 @@ async def sign_data(request: SignDataRequest):
         result = tpm_api.sign_data(
             context_file=request.context_file,
             data=request.data,
+            password=request.password,
             signature_file=request.signature_file,
             output_format=request.output_format
         )
@@ -435,6 +465,7 @@ async def decrypt_data(request: DecryptDataRequest):
         result = tpm_api.decrypt_data(
             context_file=request.context_file,
             encrypted_data=request.encrypted_data,
+            password=request.password,
             decrypted_file=request.decrypted_file
         )
         
@@ -447,13 +478,13 @@ async def decrypt_data(request: DecryptDataRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/tpm2/full-reset")
-async def full_reset():
+async def full_reset(request: FullResetRequest):
     """Perform a complete TPM reset - clears all contexts, persistent objects, and authorizations"""
     if tpm_api is None:
         raise HTTPException(status_code=503, detail="TPM2 API not available")
     
     try:
-        result = tpm_api.full_reset()
+        result = tpm_api.full_reset(password=request.password)
         
         if result["success"]:
             return JSONResponse(content=result, status_code=200)
@@ -465,7 +496,7 @@ async def full_reset():
 
 # Convenience endpoint for the complete workflow
 @app.post("/tpm2/workflow/complete")
-async def complete_workflow():
+async def complete_workflow(request: CompleteWorkFlow):
     """Execute the complete TPM2 workflow: create primary -> create key -> load -> make persistent"""
     if tpm_api is None:
         raise HTTPException(status_code=503, detail="TPM2 API not available")
@@ -475,28 +506,28 @@ async def complete_workflow():
         
         # Step 1: Create primary key
         print("Creating primary key...")
-        result = tpm_api.create_primary_key()
+        result = tpm_api.create_primary_key(request.password)
         results["create_primary"] = result
         if not result["success"]:
             raise HTTPException(status_code=400, detail=f"Primary key creation failed: {result['error']}")
         
         # Step 2: Create RSA key
         print("Creating RSA key...")
-        result = tpm_api.create_key("primary.ctx", "rsa", "rsa.pub", "rsa.priv")
+        result = tpm_api.create_key("primary.ctx", request.password, "rsa", "rsa.pub", "rsa.priv")
         results["create_key"] = result
         if not result["success"]:
             raise HTTPException(status_code=400, detail=f"Key creation failed: {result['error']}")
         
         # Step 3: Load key
         print("Loading key...")
-        result = tpm_api.load_key("primary.ctx", "rsa.pub", "rsa.priv", "rsa.ctx")
+        result = tpm_api.load_key("primary.ctx", "rsa.pub", "rsa.priv", request.password, "rsa.ctx")
         results["load_key"] = result
         if not result["success"]:
             raise HTTPException(status_code=400, detail=f"Key loading failed: {result['error']}")
         
         # Step 4: Make persistent
         print("Making key persistent...")
-        result = tpm_api.make_persistent("rsa.ctx")
+        result = tpm_api.make_persistent("rsa.ctx", request.password)
         results["make_persistent"] = result
         if not result["success"]:
             raise HTTPException(status_code=400, detail=f"Making persistent failed: {result['error']}")
@@ -544,7 +575,8 @@ async def store_key_value(request: StoreKeyValueRequest):
             context_file=request.context_file,
             store_name=request.store_name,
             key=request.key,
-            value=request.value
+            value=request.value,
+            password=request.password
         )
         
         if result["success"]:
@@ -565,7 +597,8 @@ async def retrieve_key_value(request: RetrieveKeyValueRequest):
         result = tpm_api.retrieve_key_value(
             context_file=request.context_file,
             store_name=request.store_name,
-            key=request.key
+            key=request.key,
+            password=request.password
         )
         
         if result["success"]:
@@ -585,7 +618,8 @@ async def list_file_store_keys(request: ListFileStoreKeysRequest):
     try:
         result = tpm_api.list_file_store_keys(
             context_file=request.context_file,
-            store_name=request.store_name
+            store_name=request.store_name,
+            password=request.password
         )
         
         if result["success"]:
@@ -606,7 +640,8 @@ async def delete_key_value(request: DeleteKeyValueRequest):
         result = tpm_api.delete_key_value(
             context_file=request.context_file,
             store_name=request.store_name,
-            key=request.key
+            key=request.key,
+            password=request.password
         )
         
         if result["success"]:
@@ -628,6 +663,7 @@ async def encrypt_data_aes(request: EncryptDataAESRequest):
         result = tpm_api.encrypt_data_aes(
             context_file=request.context_file,
             data=request.data,
+            password=request.password,
             encrypted_file=request.encrypted_file
         )
         
@@ -649,6 +685,7 @@ async def decrypt_data_aes(request: DecryptDataAESRequest):
         result = tpm_api.decrypt_data_aes(
             context_file=request.context_file,
             encrypted_data=request.encrypted_data,
+            password=request.password,
             decrypted_file=request.decrypted_file
         )
         
@@ -670,6 +707,7 @@ async def create_file_store_aes(request: CreateFileStoreAESRequest):
     try:
         result = tpm_api.create_encrypted_file_store_aes(
             context_file=request.context_file,
+            password=request.password,
             store_name=request.store_name
         )
         
@@ -692,7 +730,8 @@ async def store_key_value_aes(request: StoreKeyValueAESRequest):
             context_file=request.context_file,
             store_name=request.store_name,
             key=request.key,
-            value=request.value
+            value=request.value,
+            password=request.password
         )
         
         if result["success"]:
@@ -713,7 +752,8 @@ async def retrieve_key_value_aes(request: RetrieveKeyValueAESRequest):
         result = tpm_api.retrieve_key_value_aes(
             context_file=request.context_file,
             store_name=request.store_name,
-            key=request.key
+            key=request.key,
+            password=request.password
         )
         
         if result["success"]:
@@ -733,7 +773,8 @@ async def list_file_store_keys_aes(request: ListFileStoreKeysAESRequest):
     try:
         result = tpm_api.list_file_store_keys_aes(
             context_file=request.context_file,
-            store_name=request.store_name
+            store_name=request.store_name,
+            password=request.password
         )
         
         if result["success"]:
@@ -754,7 +795,8 @@ async def delete_key_value_aes(request: DeleteKeyValueAESRequest):
         result = tpm_api.delete_key_value_aes(
             context_file=request.context_file,
             store_name=request.store_name,
-            key=request.key
+            key=request.key,
+            password=request.password
         )
         
         if result["success"]:

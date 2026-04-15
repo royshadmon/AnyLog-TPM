@@ -16,6 +16,7 @@ def main():
     primary_parser = subparsers.add_parser("create-primary", help="Create a primary key")
     primary_parser.add_argument("--hierarchy", default="o", help="TPM hierarchy (o/e/p)")
     primary_parser.add_argument("--output", "-o", default="primary.ctx", help="Output context file")
+    primary_parser.add_argument("--password", default=None, help="Password for the primary key")
     
     # Create key command
     create_parser = subparsers.add_parser("create-key", help="Create a key under parent")
@@ -23,6 +24,7 @@ def main():
     create_parser.add_argument("--type", "-t", default="rsa", help="Key type (rsa/ecc)")
     create_parser.add_argument("--public", default="key.pub", help="Public key output file")
     create_parser.add_argument("--private", default="key.priv", help="Private key output file")
+    create_parser.add_argument("--password", default=None, help="Password for the parent and created key")
     
     # Load key command
     load_parser = subparsers.add_parser("load-key", help="Load a key into TPM")
@@ -30,11 +32,13 @@ def main():
     load_parser.add_argument("--public", required=True, help="Public key file")
     load_parser.add_argument("--private", required=True, help="Private key file")
     load_parser.add_argument("--output", "-o", default="loaded_key.ctx", help="Output context file")
+    load_parser.add_argument("--password", default=None, help="Password for the parent key")
     
     # Make persistent command
     persistent_parser = subparsers.add_parser("make-persistent", help="Make key persistent")
     persistent_parser.add_argument("--context", "-c", required=True, help="Key context file")
     persistent_parser.add_argument("--handle", default="0x81010001", help="Persistent handle")
+    persistent_parser.add_argument("--password", default=None, help="Owner hierarchy password")
     
     # Flush context command
     flush_parser = subparsers.add_parser("flush-context", help="Flush TPM contexts")
@@ -47,6 +51,7 @@ def main():
     
     # Workflow command
     workflow_parser = subparsers.add_parser("workflow", help="Execute complete workflow")
+    workflow_parser.add_argument("--password", default=None, help="Password for the workflow keys")
     
 
     
@@ -61,9 +66,11 @@ def main():
     decrypt_parser.add_argument("--context", "-c", required=True, help="Key context file")
     decrypt_parser.add_argument("--data", "-d", required=True, help="Encrypted data to decrypt (base64 encoded)")
     decrypt_parser.add_argument("--output", "-o", default="decrypted.bin", help="Output decrypted file")
+    decrypt_parser.add_argument("--password", default=None, help="Password for the loaded key")
     
     # Full reset command
     reset_parser = subparsers.add_parser("full-reset", help="Perform complete TPM reset")
+    reset_parser.add_argument("--password", default=None, help="Owner hierarchy password")
     
     args = parser.parse_args()
     
@@ -77,13 +84,15 @@ def main():
         
         if args.command == "create-primary":
             result = tpm.create_primary_key(
+                password=args.password,
                 hierarchy=args.hierarchy,
-                context_file=args.output
+                context_file=args.output,
             )
             
         elif args.command == "create-key":
             result = tpm.create_key(
                 parent_context=args.parent,
+                password=args.password,
                 key_type=args.type,
                 public_file=args.public,
                 private_file=args.private
@@ -94,6 +103,7 @@ def main():
                 parent_context=args.parent,
                 public_file=args.public,
                 private_file=args.private,
+                password=args.password,
                 context_file=args.output
             )
             
@@ -101,6 +111,7 @@ def main():
             handle = int(args.handle, 16) if args.handle.startswith("0x") else int(args.handle)
             result = tpm.make_persistent(
                 context_file=args.context,
+                password=args.password,
                 persistent_handle=handle
             )
             
@@ -115,7 +126,7 @@ def main():
             
             # Step 1: Create primary key
             print("1. Creating primary key...")
-            result = tpm.create_primary_key()
+            result = tpm.create_primary_key(password=args.password)
             if not result["success"]:
                 print(f"Error: {result['error']}")
                 sys.exit(1)
@@ -123,7 +134,7 @@ def main():
             
             # Step 2: Create RSA key
             print("2. Creating RSA key...")
-            result = tpm.create_key("primary.ctx", "rsa", "rsa.pub", "rsa.priv")
+            result = tpm.create_key("primary.ctx", args.password, "rsa", "rsa.pub", "rsa.priv")
             if not result["success"]:
                 print(f"Error: {result['error']}")
                 sys.exit(1)
@@ -131,7 +142,7 @@ def main():
             
             # Step 3: Load key
             print("3. Loading key...")
-            result = tpm.load_key("primary.ctx", "rsa.pub", "rsa.priv", "rsa.ctx")
+            result = tpm.load_key("primary.ctx", "rsa.pub", "rsa.priv", args.password,"rsa.ctx")
             if not result["success"]:
                 print(f"Error: {result['error']}")
                 sys.exit(1)
@@ -139,7 +150,7 @@ def main():
             
             # Step 4: Make persistent
             print("4. Making key persistent...")
-            result = tpm.make_persistent("rsa.ctx")
+            result = tpm.make_persistent("rsa.ctx", args.password)
             if not result["success"]:
                 print(f"Error: {result['error']}")
                 sys.exit(1)
@@ -167,6 +178,7 @@ def main():
             result = tpm.decrypt_data(
                 context_file=args.context,
                 encrypted_data=args.data,
+                password=args.password,
                 decrypted_file=args.output
             )
             
@@ -182,7 +194,7 @@ def main():
                 print("Reset cancelled.")
                 sys.exit(0)
             
-            result = tpm.full_reset()
+            result = tpm.full_reset(args.password)
         
         # Print result
         if result["success"]:

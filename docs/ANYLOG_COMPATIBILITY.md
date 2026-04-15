@@ -293,6 +293,7 @@ When calling `/tpm2/read-public-key` with `output_format="pem"`:
 ```python
 # Primary Key
 tpm.create_primary_key(
+    password=<password>,
     hierarchy="o",
     context_file="primary.ctx",
     key_size=1024  # 1024-bit RSA

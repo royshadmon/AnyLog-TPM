@@ -117,14 +117,14 @@ See **[multiple-instances/README.md](multiple-instances/README.md)** for TPM ins
 ### Create Primary Key
 ```bash
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"hierarchy": "o", "context_file": "primary.ctx"}' \
+  -d '{"hierarchy": "o", "context_file": "primary.ctx", "password": "abc"}' \
   http://localhost:8000/tpm2/create-primary
 ```
 
 ### Create RSA Key
 ```bash
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"parent_context": "primary.ctx", "key_type": "rsa", "public_file": "rsa.pub", "private_file": "rsa.priv"}' \
+  -d '{"parent_context": "primary.ctx", "key_type": "rsa", "public_file": "rsa.pub", "private_file": "rsa.priv", "password": "abc"}' \
   http://localhost:8000/tpm2/create-key
 ```
 
@@ -132,26 +132,26 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Create AES-128 key
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"parent_context": "primary.ctx", "key_type": "aes128", "public_file": "aes128_key.ctx"}' \
+  -d '{"parent_context": "primary.ctx", "key_type": "aes128", "public_file": "aes128_key.ctx", "password": "abc"}' \
   http://localhost:8000/tpm2/create-key
 
 # Create AES-256 key
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"parent_context": "primary.ctx", "key_type": "aes256", "public_file": "aes256_key.ctx"}' \
+  -d '{"parent_context": "primary.ctx", "key_type": "aes256", "public_file": "aes256_key.ctx", "password": "abc"}' \
   http://localhost:8000/tpm2/create-key
 ```
 
 ### Load Key
 ```bash
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"parent_context": "primary.ctx", "public_file": "rsa.pub", "private_file": "rsa.priv", "context_file": "loaded_key.ctx"}' \
+  -d '{"parent_context": "primary.ctx", "public_file": "rsa.pub", "private_file": "rsa.priv", "context_file": "loaded_key.ctx", "password": "abc"}' \
   http://localhost:8000/tpm2/load-key
 ```
 
 ### Make Key Persistent (EvictControl)
 ```bash
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "loaded_key.ctx", "persistent_handle": "0x81010001"}' \
+  -d '{"context_file": "loaded_key.ctx", "persistent_handle": "0x81010001", "password": "abc"}' \
   http://localhost:8000/tpm2/make-persistent
 ```
 
@@ -173,7 +173,7 @@ python3 tpm2_cli.py full-reset
 # First, ensure you have a loaded key context
 # Then sign data (data must be base64 encoded)
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "loaded_key.ctx", "data": "SGVsbG8gV29ybGQ=", "signature_file": "signature.sig"}' \
+  -d '{"context_file": "loaded_key.ctx", "data": "SGVsbG8gV29ybGQ=", "signature_file": "signature.sig", "password": "abc"}' \
   http://localhost:8000/tpm2/sign
 ```
 
@@ -199,7 +199,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Decrypt data using a loaded RSA key
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "loaded_key.ctx", "encrypted_data": "base64_encoded_encrypted_data", "decrypted_file": "decrypted.bin"}' \
+  -d '{"context_file": "loaded_key.ctx", "encrypted_data": "base64_encoded_encrypted_data", "decrypted_file": "decrypted.bin", "password": "abc"}' \
   http://localhost:8000/tpm2/decrypt
 ```
 
@@ -207,12 +207,12 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Encrypt data using a loaded AES key
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "data": "base64_encoded_data", "encrypted_file": "encrypted_aes.bin"}' \
+  -d '{"context_file": "aes256_key.ctx", "data": "base64_encoded_data", "encrypted_file": "encrypted_aes.bin", "password": "abc"}' \
   http://localhost:8000/tpm2/encrypt-aes
 
 # Decrypt data using a loaded AES key
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "encrypted_data": "base64_encoded_encrypted_data", "decrypted_file": "decrypted_aes.bin"}' \
+  -d '{"context_file": "aes256_key.ctx", "encrypted_data": "base64_encoded_encrypted_data", "decrypted_file": "decrypted_aes.bin", "password": "abc"}' \
   http://localhost:8000/tpm2/decrypt-aes
 ```
 
@@ -230,12 +230,12 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Store a simple string value
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username", "value": "john_doe"}' \
+  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username", "value": "john_doe", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store/store
 
 # Store a complex object
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "user_profile", "value": {"name": "John Doe", "email": "john@example.com"}}' \
+  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "user_profile", "value": {"name": "John Doe", "email": "john@example.com"}, "password": "abc"}' \
   http://localhost:8000/tpm2/file-store/store
 ```
 
@@ -243,7 +243,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Retrieve a stored value
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username"}' \
+  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store/retrieve
 ```
 
@@ -251,7 +251,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # List all keys in the encrypted file store
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json"}' \
+  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store/list-keys
 ```
 
@@ -259,7 +259,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Delete a key-value pair
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username"}' \
+  -d '{"context_file": "encrypt_key.ctx", "store_name": "my_secure_store.json", "key": "username", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store/delete
 ```
 
@@ -269,7 +269,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Create a new AES encrypted file store
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json"}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/create
 ```
 
@@ -277,12 +277,12 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Store a simple string value using AES
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username", "value": "john_doe"}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username", "value": "john_doe", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/store
 
 # Store a complex object using AES
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "user_profile", "value": {"name": "John Doe", "email": "john@example.com"}}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "user_profile", "value": {"name": "John Doe", "email": "john@example.com"}, "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/store
 ```
 
@@ -290,7 +290,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Retrieve a stored value using AES
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username"}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/retrieve
 ```
 
@@ -298,7 +298,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # List all keys in the AES encrypted file store
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json"}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/list-keys
 ```
 
@@ -306,7 +306,7 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # Delete a key-value pair using AES
 curl -X POST -H "Content-Type: application/json" \
-  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username"}' \
+  -d '{"context_file": "aes256_key.ctx", "store_name": "my_aes_secure_store.json", "key": "username", "password": "abc"}' \
   http://localhost:8000/tpm2/file-store-aes/delete
 ```
 
@@ -314,7 +314,9 @@ curl -X POST -H "Content-Type: application/json" \
 ```bash
 # ⚠️ WARNING: This performs a complete TPM reset!
 # Clears all contexts, persistent objects, and authorizations
-curl -X POST http://localhost:8000/tpm2/full-reset
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"password": "abc"}' \
+  http://localhost:8000/tpm2/full-reset
 ```
 
 ### Complete Sign/Verify Workflow Example
@@ -683,7 +685,9 @@ python3 tpm2_rest_api.py
 curl http://localhost:8000/health
 
 # Test complete workflow
-curl -X POST http://localhost:8000/tpm2/workflow/complete
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"password": "abc"}' \
+  http://localhost:8000/tpm2/workflow/complete
 ```
 
 ## Lockout Mode
