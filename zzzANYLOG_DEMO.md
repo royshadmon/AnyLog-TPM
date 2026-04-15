@@ -5,7 +5,7 @@ Clone this repository (in the branch fulltest)
 to setup one tpm instance run the following commands:
 ```
 ./multiple-instances/setup-multiple-instances.sh 1 
-docker-compose -f multiple-instances/docker-compose.instances.yaml up -d
+docker compose -f multiple-instances/docker-compose.instances.yaml up -d
 ```
 
 to reset the tpm instance run the following command:
@@ -29,6 +29,7 @@ Make sure to add the following at the end of the node_configs.env file:
 ```
 #===tpm===
 ENABLE_TPM=true
+TPM_IP = 192.168.0.140
 TPM_PORT=8001
 TPM_HOST_PORT=8011
 TPM_DIR="/Users/pranav/Desktop/Anylog/anylog-newthing/anylog-swtpm/SWTPM-FastAPI/multiple-instances/shared_dir_node1"
@@ -42,8 +43,13 @@ Add the following to the main.al in the deployment scripts right after localscri
 
 ```
 if $TPM_DIR then set tpm_dir = $TPM_DIR
+if $TPM_IP then set tpm_ip = $TPM_IP
+if $TPM_PORT then set tpm_port = $TPM_PORT
 # is_tpm = file test !tpm_dir
-# if not !is_tpm then error to show no tpm and decide if program wants to coninue/not continue 
+# if not !is_tpm then error to show no tpm and decide if program wants to coninue/not continue
+
+tpm_base_url = !tpm_ip + : + !tpm_port
+tpm set where conn = !tpm_base_url and tpm_dir = !tpm_dir
 ```
 
 
@@ -55,7 +61,8 @@ Below is a testing script used to run tpm commands and test the tpm instance. Th
 ## ON OP 1
 
 ```
-id create keys where password = 123 and keys_file = tpm-192.168.86.31:8001/root_key
+root_key_file = root_key
+id create keys where password = 123 and keys_file = !root_key_file
 
 
 <member = {"member" : {  
@@ -64,14 +71,13 @@ id create keys where password = 123 and keys_file = tpm-192.168.86.31:8001/root_
     }  
 }>
 
-id sign !member where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !member where key = !root_key_file and password = 123
 
 json !member
 
 blockchain insert where policy = !member and local = true and master = !ledger_conn
 
-
-id create keys for node where password = tpm-192.168.86.31:8001
+id create keys for node where password = abc
 
 <member = {"member" : {
     "id"   : "node_001",
@@ -81,7 +87,7 @@ id create keys for node where password = tpm-192.168.86.31:8001
     }
 }>
 
-id sign !member where password = tpm-192.168.86.31:8001/
+id sign !member where key = node and password = abc
 
 json !member
 
@@ -97,7 +103,7 @@ blockchain insert where policy = !member and local = true and master = !ledger_c
     }
 }>
 
-id sign !permissions where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !permissions where key = !root_key_file and password = 123
 
 json !permissions
 
@@ -114,7 +120,7 @@ permission_id =  blockchain get permissions where name = "node basic permissions
         }
 }>
 
-id sign !assignment where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !assignment where key = !root_key_file and password = 123
 
 json !assignment 
 
@@ -122,7 +128,15 @@ blockchain insert where policy = !assignment and local = true  and master = !led
 ```
 ## ON MASTER
 ```
-id create keys for node where password = tpm-192.168.86.31:8001/
+tpm_dir = /Users/roy/Github-Repos/AnyLog-TPM/multiple-instances/tpm_shared_dir2
+tpm_port = 8002
+tpm_ip = $INET_IP
+tpm_base_url = !tpm_ip + : + !tpm_port
+root_key_file = root_key
+tpm set where conn = !tpm_base_url and tpm_dir = !tpm_dir
+
+
+id create keys for node where password = xyz
 
 <member = {"member" : {  
     "type" : "node",  
@@ -130,7 +144,7 @@ id create keys for node where password = tpm-192.168.86.31:8001/
     }  
 }>  
 
-id sign !member where password = tpm-192.168.86.31:8001/
+id sign !member where key = node and password = xyz
 
 json !member
 
@@ -144,7 +158,7 @@ blockchain insert where policy = !member and local = true and master = !ledger_c
     }
 }>
 
-id sign !permissions where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !permissions where key = !root_key_file and password = 123
 
 json !permissions
 
@@ -161,7 +175,7 @@ member_node = blockchain get member where name = master_node bring ['member']['p
         }
 }>
 
-id sign !assignment where key = tpm-192.168.86.31:8001/root_key and password = 123
+id sign !assignment where key = !root_key_file and password = 123
 
 json !assignment 
 
