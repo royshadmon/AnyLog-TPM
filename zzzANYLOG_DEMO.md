@@ -128,6 +128,14 @@ blockchain insert where policy = !assignment and local = true  and master = !led
 ```
 ## ON MASTER
 ```
+tpm_dir = /Users/roy/Github-Repos/AnyLog-TPM/multiple-instances/tpm_shared_dir2
+tpm_port = 8002
+tpm_ip = $INET_IP
+tpm_base_url = !tpm_ip + : + !tpm_port
+root_key_file = root_key
+tpm set where conn = !tpm_base_url and tpm_dir = !tpm_dir
+
+
 id create keys for node where password = xyz
 
 <member = {"member" : {  
