@@ -11,6 +11,18 @@ import tempfile
 from typing import Dict, List, Optional, Any
 
 TEMP_DECRYPTED_AES_FILE = "temp_decrypted_aes.json"
+TPM2_RSA_SCHEMES = {"rsassa", "rsapss"}
+TPM2_HASH_ALGORITHMS = {"sha256", "sha384", "sha512"}
+TPM2_INPUT_KINDS = {"message", "digest"}
+TPM2_SIGNATURE_ALG_IDS = {
+    "rsassa": b"\x00\x14",
+    "rsapss": b"\x00\x16",
+}
+TPM2_HASH_ALG_IDS = {
+    "sha256": b"\x00\x0b",
+    "sha384": b"\x00\x0c",
+    "sha512": b"\x00\x0d",
+}
 
 def ensure_starts_with_newline(s: str) -> str:
     """
@@ -610,8 +622,17 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def sign_data(self, context_file: str, data: str, password: str, signature_file: str = "signature.sig",
-                  output_format: str = "hex") -> Dict[str, Any]:
+    def sign_data(
+        self,
+        context_file: str,
+        data: str,
+        password: str,
+        signature_file: str = "signature.sig",
+        output_format: str = "hex",
+        scheme: str = "rsapss",
+        hash_alg: str = "sha256",
+        input_kind: str = "message",
+    ) -> Dict[str, Any]:
         """
         Sign data using a loaded key
         
@@ -621,11 +642,31 @@ class TPM2API:
             signature_file: File to save the signature
             output_format: Output format for signature - "hex" (like regular keys) or "base64" (TPM format)
                           Default: "hex" to match regular key signature format
+            scheme: TPM signing scheme (default: "rsapss" to preserve current behavior)
+            hash_alg: TPM hash algorithm (default: "sha256" to preserve current behavior)
+            input_kind: Whether data is a "message" or precomputed "digest"
             
         Returns:
             Dictionary with result containing signature in the requested format
         """
         try:
+            scheme = (scheme or "rsapss").lower()
+            hash_alg = (hash_alg or "sha256").lower()
+            input_kind = (input_kind or "message").lower()
+            output_format = (output_format or "hex").lower()
+
+            if scheme not in TPM2_RSA_SCHEMES:
+                return {"success": False, "error": f"Unsupported signing scheme: {scheme}. Use one of {sorted(TPM2_RSA_SCHEMES)}"}
+
+            if hash_alg not in TPM2_HASH_ALGORITHMS:
+                return {"success": False, "error": f"Unsupported hash algorithm: {hash_alg}. Use one of {sorted(TPM2_HASH_ALGORITHMS)}"}
+
+            if input_kind not in TPM2_INPUT_KINDS:
+                return {"success": False, "error": f"Unsupported input kind: {input_kind}. Use one of {sorted(TPM2_INPUT_KINDS)}"}
+
+            if output_format not in ["hex", "base64"]:
+                return {"success": False, "error": f"Unsupported output format: {output_format}. Use 'hex' or 'base64'"}
+
             # Decode base64 data
             decoded_data = base64.b64decode(data)
             
@@ -635,20 +676,20 @@ class TPM2API:
                 temp_data_file = temp_file.name
             
             try:
-                # tpm2_sign syntax: tpm2_sign -c key_context -g hash_alg -s scheme -o signature_file message_file
-                # -o is for signature output file, -s is for signing scheme
-                # -s rsapss uses PSS padding (matches AnyLog's padding.PSS)
-                # -s rsassa uses PKCS1v1.5 padding (default, but doesn't match AnyLog)
-                # The message file is passed as a positional argument (not with -d, which is for digests)
+                # Use message input by default to preserve current behavior.
                 cmd = [
                     'tpm2_sign',
                     '-c', context_file,
-                    '-g', 'sha256',
-                    '-s', 'rsapss',  # Use PSS padding to match AnyLog's padding.PSS
+                    '-g', hash_alg,
+                    '-s', scheme,
                     '-o', signature_file,
                     '-p', password,
-                    temp_data_file  # Message file as positional argument
                 ]
+
+                if input_kind == "digest":
+                    cmd.extend(['-d', temp_data_file])
+                else:
+                    cmd.append(temp_data_file)
                 
                 result = self._run_command(cmd)
                 
@@ -683,6 +724,9 @@ class TPM2API:
                         "signature": signature_output,
                         "signature_file": signature_file,
                         "signature_format": output_format,
+                        "scheme": scheme,
+                        "hash_alg": hash_alg,
+                        "input_kind": input_kind,
                         "raw_signature_length": len(raw_signature) if raw_signature else None,
                         "action": "data_signed"
                     }
@@ -804,8 +848,16 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def verify_signature(self, context_file: str, data: str, signature: str, 
-                        signature_format: str = "auto") -> Dict[str, Any]:
+    def verify_signature(
+        self,
+        context_file: str,
+        data: str,
+        signature: str,
+        signature_format: str = "auto",
+        scheme: str = "rsapss",
+        hash_alg: str = "sha256",
+        input_kind: str = "message",
+    ) -> Dict[str, Any]:
         """
         Verify a signature
         
@@ -815,11 +867,28 @@ class TPM2API:
             signature: Signature to verify (hex string or base64 encoded TPM format)
             signature_format: Format of signature - "hex", "base64", or "auto" (detect automatically)
                             Default: "auto" - detects hex vs base64 format
+            scheme: TPM signing scheme used to create the signature
+            hash_alg: TPM hash algorithm used to create the signature
+            input_kind: Whether data is a "message" or precomputed "digest"
             
         Returns:
             Dictionary with verification result
         """
         try:
+            scheme = (scheme or "rsapss").lower()
+            hash_alg = (hash_alg or "sha256").lower()
+            input_kind = (input_kind or "message").lower()
+            signature_format = (signature_format or "auto").lower()
+
+            if scheme not in TPM2_RSA_SCHEMES:
+                return {"success": False, "error": f"Unsupported signing scheme: {scheme}. Use one of {sorted(TPM2_RSA_SCHEMES)}"}
+
+            if hash_alg not in TPM2_HASH_ALGORITHMS:
+                return {"success": False, "error": f"Unsupported hash algorithm: {hash_alg}. Use one of {sorted(TPM2_HASH_ALGORITHMS)}"}
+
+            if input_kind not in TPM2_INPUT_KINDS:
+                return {"success": False, "error": f"Unsupported input kind: {input_kind}. Use one of {sorted(TPM2_INPUT_KINDS)}"}
+
             # Decode base64 data
             decoded_data = base64.b64decode(data)
             
@@ -838,14 +907,14 @@ class TPM2API:
                 raw_signature = bytes.fromhex(signature)
                 
                 # Reconstruct TPMT_SIGNATURE structure:
-                # - 2 bytes: sigAlg = 0x0014 (TPM_ALG_RSASSA)
-                # - 2 bytes: hashAlg = 0x000B (TPM_ALG_SHA256)
+                # - 2 bytes: sigAlg
+                # - 2 bytes: hashAlg
                 # - 2 bytes: signature size (UINT16, big-endian)
                 # - N bytes: raw RSA signature value
-                sig_alg = b'\x00\x14'  # TPM_ALG_RSASSA
-                hash_alg = b'\x00\x0b'  # TPM_ALG_SHA256
+                sig_alg = TPM2_SIGNATURE_ALG_IDS[scheme]
+                hash_alg_id = TPM2_HASH_ALG_IDS[hash_alg]
                 sig_size = len(raw_signature).to_bytes(2, 'big')
-                tpm_signature = sig_alg + hash_alg + sig_size + raw_signature
+                tpm_signature = sig_alg + hash_alg_id + sig_size + raw_signature
                 decoded_signature = tpm_signature
             else:
                 # Base64 encoded TPM format (original behavior)
@@ -864,10 +933,14 @@ class TPM2API:
                 cmd = [
                     'tpm2_verifysignature',
                     '-c', context_file,
-                    '-g', 'sha256',
-                    '-m', temp_data_path,
+                    '-g', hash_alg,
                     '-s', temp_sig_path
                 ]
+
+                if input_kind == "digest":
+                    cmd.extend(['-d', temp_data_path])
+                else:
+                    cmd.extend(['-m', temp_data_path])
                 
                 result = self._run_command(cmd)
                 
@@ -875,6 +948,9 @@ class TPM2API:
                     return {
                         "success": True,
                         "verified": True,
+                        "scheme": scheme,
+                        "hash_alg": hash_alg,
+                        "input_kind": input_kind,
                         "action": "signature_verified"
                     }
                 else:

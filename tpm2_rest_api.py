@@ -93,6 +93,9 @@ class SignDataRequest(BaseModel):
     data: str  # base64 encoded data
     signature_file: str = "signature.sig"
     output_format: str = "hex"  # "hex" (like regular keys) or "base64" (TPM format)
+    scheme: str = "rsapss"  # Preserve current behavior unless caller overrides it
+    hash_alg: str = "sha256"  # Preserve current behavior unless caller overrides it
+    input_kind: str = "message"  # "message" or "digest"
     password: str
 
 class VerifySignatureRequest(BaseModel):
@@ -100,6 +103,9 @@ class VerifySignatureRequest(BaseModel):
     data: str  # base64 encoded data
     signature: str  # hex string (like regular keys) or base64 encoded TPM format
     signature_format: str = "auto"  # "hex", "base64", or "auto" (detect automatically)
+    scheme: str = "rsapss"  # Preserve current behavior unless caller overrides it
+    hash_alg: str = "sha256"  # Preserve current behavior unless caller overrides it
+    input_kind: str = "message"  # "message" or "digest"
 
 class ReadPublicKeyRequest(BaseModel):
     context_file: str
@@ -380,7 +386,10 @@ async def sign_data(request: SignDataRequest):
             data=request.data,
             password=request.password,
             signature_file=request.signature_file,
-            output_format=request.output_format
+            output_format=request.output_format,
+            scheme=request.scheme,
+            hash_alg=request.hash_alg,
+            input_kind=request.input_kind,
         )
         
         if result["success"]:
@@ -402,7 +411,10 @@ async def verify_signature(request: VerifySignatureRequest):
             context_file=request.context_file,
             data=request.data,
             signature=request.signature,
-            signature_format=request.signature_format
+            signature_format=request.signature_format,
+            scheme=request.scheme,
+            hash_alg=request.hash_alg,
+            input_kind=request.input_kind,
         )
         
         if result["success"]:
