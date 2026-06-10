@@ -86,3 +86,42 @@ load_shared_dir_prefix() {
     SHARED_DIR_PREFIX="$_raw"
     export SHARED_DIR_PREFIX
 }
+
+# Whether generated compose should publish SWTPM server/control ports to the host.
+#
+# Priority:
+#   1) SWTPM_EXPOSE_PORTS environment variable
+#   2) First non-comment line in .instances-expose-ports (next to this file)
+#   3) Default: true
+#
+# Accepted true-ish values: 1, true, yes, on
+# Accepted false-ish values: 0, false, no, off
+load_swtpm_expose_ports() {
+    local _here
+    _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _f="$_here/.instances-expose-ports"
+    local _raw=""
+
+    if [ -n "${SWTPM_EXPOSE_PORTS:-}" ]; then
+        _raw="$SWTPM_EXPOSE_PORTS"
+    elif [ -f "$_f" ]; then
+        _raw=$(grep -v '^[[:space:]]*#' "$_f" 2>/dev/null | head -1 | tr -d '\r')
+        _raw=$(echo "$_raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    fi
+
+    _raw="$(printf '%s' "${_raw:-true}" | tr '[:upper:]' '[:lower:]')"
+
+    case "$_raw" in
+        1|true|yes|on)
+            SWTPM_EXPOSE_PORTS_RESOLVED="true"
+            ;;
+        0|false|no|off|"")
+            SWTPM_EXPOSE_PORTS_RESOLVED="false"
+            ;;
+        *)
+            SWTPM_EXPOSE_PORTS_RESOLVED="false"
+            ;;
+    esac
+
+    export SWTPM_EXPOSE_PORTS_RESOLVED
+}

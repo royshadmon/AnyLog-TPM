@@ -1,3 +1,0 @@
-# Parent directory for shared_dir_node1, shared_dir_node2, ...
-# Non-absolute paths are relative to multiple-instances/ (use absolute for any host path).
-/Users/pranav/Desktop/Anylog/anylog-newthing/anylog-swtpm/SWTPM-FastAPI/multiple-instances

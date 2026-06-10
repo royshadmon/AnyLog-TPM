@@ -10,6 +10,14 @@ set -e
 INSTANCES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$INSTANCES_DIR")"
 
+if command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+elif docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker compose"
+else
+    DOCKER_COMPOSE_CMD="docker-compose"
+fi
+
 show_setup_help() {
     cat << EOF
 Usage: $0 [OPTIONS] [NUM_INSTANCES]
@@ -185,6 +193,15 @@ else
     echo "  ./generate-docker-compose.sh $NUM_INSTANCES"
 fi
 
+if [ -f "$INSTANCES_DIR/docker-compose.instances.yaml" ]; then
+    echo ""
+    echo "Rebuilding TPM Docker image..."
+    cd "$PROJECT_ROOT"
+    $DOCKER_COMPOSE_CMD -f multiple-instances/docker-compose.instances.yaml build --no-cache
+    cd "$INSTANCES_DIR"
+    echo "✓ Rebuilt TPM Docker image"
+fi
+
 echo ""
 echo "You can now start the instances with (from project root):"
-echo "  docker-compose -f multiple-instances/docker-compose.instances.yaml up -d"
+echo "  $DOCKER_COMPOSE_CMD -f multiple-instances/docker-compose.instances.yaml up -d"

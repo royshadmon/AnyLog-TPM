@@ -10,6 +10,7 @@ INSTANCES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$INSTANCES_DIR/shared-data-root.sh"
 load_shared_data_root
 load_shared_dir_prefix
+load_swtpm_expose_ports
 cd "$INSTANCES_DIR"
 
 NUM_INSTANCES=${1:-$(cat .num_instances 2>/dev/null || echo "3")}
@@ -39,10 +40,19 @@ EOF
 # Generate each instance - use absolute host paths so data can live outside multiple-instances/
 for i in $(seq 1 $NUM_INSTANCES); do
     API_PORT=$((8000 + i))
+    TLS_PORT=$((8442 + i))
     SWTPM_SERVER=$((2321 + (i - 1) * 2))
     SWTPM_CTRL=$((2322 + (i - 1) * 2))
     VOL_OPT="${SHARED_DATA_ROOT}/${SHARED_DIR_PREFIX}${i}"
     VOL_TPM="${SHARED_DATA_ROOT}/${SHARED_DIR_PREFIX}${i}/tpm_state"
+    EXTRA_PORTS=""
+    if [ "${SWTPM_EXPOSE_PORTS_RESOLVED:-false}" = "true" ]; then
+        EXTRA_PORTS=$(cat <<EOF
+      - "${SWTPM_SERVER}:${SWTPM_SERVER}"
+      - "${SWTPM_CTRL}:${SWTPM_CTRL}"
+EOF
+)
+    fi
     cat >> "$OUTPUT_FILE" << EOF
 
   tpm2-api-node${i}:
@@ -52,6 +62,8 @@ for i in $(seq 1 $NUM_INSTANCES); do
     container_name: tpm2-api-node${i}
     ports:
       - "${API_PORT}:8000"
+      - "${TLS_PORT}:8443"
+${EXTRA_PORTS}
     volumes:
       - "${VOL_OPT}:/opt/shared"
       - "${VOL_TPM}:/tmp/tpm2-emulated"
@@ -61,6 +73,8 @@ for i in $(seq 1 $NUM_INSTANCES); do
     environment:
       - TSS2_TCTI=swtpm:host=127.0.0.1,port=${SWTPM_SERVER}
       - TPM2TOOLS_TCTI=swtpm:host=127.0.0.1,port=${SWTPM_SERVER}
+      - TPM2OPENSSL_TCTI=swtpm:host=127.0.0.1,port=${SWTPM_SERVER}
+      - TPM2_TLS_API_BASE=http://127.0.0.1:8000
       - SWTPM_SERVER_PORT=${SWTPM_SERVER}
       - SWTPM_CTRL_PORT=${SWTPM_CTRL}
       - TPM_STATE_DIR=/tmp/tpm2-emulated
@@ -74,4 +88,14 @@ echo "$NUM_INSTANCES" > .num_instances
 
 echo "✓ Generated $OUTPUT_FILE with $NUM_INSTANCES instance(s)"
 echo "  API ports: 8001-$((8000 + NUM_INSTANCES))"
+echo "  HTTPS test ports: 8443-$((8442 + NUM_INSTANCES))"
+if [ "${SWTPM_EXPOSE_PORTS_RESOLVED:-false}" = "true" ]; then
+    echo "  SWTPM ports exposed: yes"
+    echo "    Node 1 -> server 2321, control 2322"
+    if [ "$NUM_INSTANCES" -gt 1 ]; then
+        echo "    Node $NUM_INSTANCES -> server $((2321 + (NUM_INSTANCES - 1) * 2)), control $((2322 + (NUM_INSTANCES - 1) * 2))"
+    fi
+else
+    echo "  SWTPM ports exposed: no"
+fi
 echo "  Start with: docker-compose -f multiple-instances/docker-compose.instances.yaml up -d"

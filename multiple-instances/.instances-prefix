@@ -1,2 +1,2 @@
-# Per-instance folder names: tpm_shared_dir1, tpm_shared_dir2, ... (prefix + number)
+# Written by setup-multiple-instances.sh --name (instance dirs: tpm_shared_dir1, tpm_shared_dir2, ...)
 tpm_shared_dir

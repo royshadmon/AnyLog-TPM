@@ -52,6 +52,39 @@ def main():
     # Workflow command
     workflow_parser = subparsers.add_parser("workflow", help="Execute complete workflow")
     workflow_parser.add_argument("--password", default=None, help="Password for the workflow keys")
+
+    # OpenSSL TLS key command
+    openssl_tls_parser = subparsers.add_parser(
+        "create-openssl-tls-key",
+        help="Create a TPM-backed OpenSSL TLS key reference file"
+    )
+    openssl_tls_parser.add_argument(
+        "--private",
+        default="server-tpm-key.pem",
+        help="Output TPM-backed private key reference file"
+    )
+    openssl_tls_parser.add_argument(
+        "--public",
+        default="server-tpm-key.pub.pem",
+        help="Output PEM public key file"
+    )
+    openssl_tls_parser.add_argument(
+        "--type",
+        default="rsa",
+        choices=["rsa", "ecc"],
+        help="Key type"
+    )
+    openssl_tls_parser.add_argument(
+        "--key-size",
+        type=int,
+        default=2048,
+        help="RSA key size in bits"
+    )
+    openssl_tls_parser.add_argument(
+        "--password",
+        default=None,
+        help="Optional passphrase to encrypt the generated key reference file"
+    )
     
 
     
@@ -164,6 +197,15 @@ def main():
             print("  - rsa.ctx (loaded key context)")
             print(f"  - Persistent handle: {result['persistent_handle']}")
             sys.exit(0)
+
+        elif args.command == "create-openssl-tls-key":
+            result = tpm.create_openssl_tls_key(
+                private_key_file=args.private,
+                public_key_file=args.public,
+                key_type=args.type,
+                key_size=args.key_size,
+                password=args.password
+            )
             
 
             

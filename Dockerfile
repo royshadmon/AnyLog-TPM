@@ -4,12 +4,13 @@ FROM ubuntu:latest
 # Install dependencies
 RUN apt update && \
     DEBIAN_FRONTEND=noninteractive apt install -y \
-    tpm2-tools tpm2-abrmd swtpm \
+    tpm2-tools tpm2-abrmd tpm2-openssl swtpm \
     autoconf \
     git \
     libtool \
     pkg-config \
     libssl-dev \
+    openssl \
     libcrypto++-dev \
     libjson-c-dev \
     libcurl4-openssl-dev \
@@ -60,10 +61,12 @@ RUN pip3 install --break-system-packages fastapi uvicorn pydantic python-multipa
 COPY tpm2_api.py /opt/tpm2_api.py
 COPY tpm2_rest_api.py /opt/tpm2_rest_api.py
 COPY tpm2_cli.py /opt/tpm2_cli.py
+COPY simple_tss2_tls_server.py /opt/simple_tss2_tls_server.py
 COPY requirements.txt /opt/requirements.txt
 
 # Make CLI executable
 RUN chmod +x /opt/tpm2_cli.py
+RUN chmod +x /opt/simple_tss2_tls_server.py
 
 # Define entrypoint script
 COPY entrypoint.sh /entrypoint.sh
@@ -71,4 +74,3 @@ RUN chmod +x /entrypoint.sh
 
 # Set default command
 ENTRYPOINT ["/entrypoint.sh"]
-

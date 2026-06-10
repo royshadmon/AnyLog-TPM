@@ -19,7 +19,27 @@ cd multiple-instances
 
 # Start all instances (run from project root):
 docker-compose -f multiple-instances/docker-compose.instances.yaml up -d
+
+# Run the TPM-backed HTTPS smoke test for node 1:
+docker exec tpm2-api-node1 \
+  python3 /opt/simple_tss2_tls_server.py \
+  --host 0.0.0.0 \
+  --force-generate
+
+curl -k https://127.0.0.1:8443/
 ```
+
+Each instance's SWTPM server/control ports are published to the host by default,
+so host-side OpenSSL TPM provider tests can use the generated TSS2 keys. To
+disable SWTPM port publishing:
+
+```bash
+export SWTPM_EXPOSE_PORTS=false
+./multiple-instances/generate-docker-compose.sh 1
+docker-compose -f multiple-instances/docker-compose.instances.yaml up -d
+```
+
+You can also persist this behavior by writing `false` into `multiple-instances/.instances-expose-ports`.
 
 ### Management
 ```bash
@@ -106,6 +126,15 @@ python multiple-instances/test-multiple-instances.py
 | Node 1   | 8001     | 2321         | 2322           |
 | Node 2   | 8002     | 2323         | 2324           |
 | Node N   | 8000+N   | 2321+2(N-1)  | 2322+2(N-1)    |
+
+The generated compose file also publishes HTTPS test ports as `8442+N`, so node 1
+is available on host port `8443` after running `/opt/simple_tss2_tls_server.py`
+inside the container.
+
+By default, the API port, HTTPS test port, and SWTPM server/control ports are
+published to the host. Set `SWTPM_EXPOSE_PORTS=false` or create
+`multiple-instances/.instances-expose-ports` with `false` to hide the SWTPM
+server/control ports.
 
 ## Changing Instance Count
 

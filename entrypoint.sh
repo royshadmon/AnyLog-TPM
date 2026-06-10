@@ -10,6 +10,7 @@ SWTPM_LOG_FILE=${SWTPM_LOG_FILE:-/var/log/swtpm.log}
 # Start TPM Emulator
 echo "Starting DBus..."
 mkdir -p /var/run/dbus
+rm -f /var/run/dbus/pid /run/dbus/pid /run/dbus/system_bus_socket
 dbus-daemon --system --fork
 
 echo "Starting TPM Emulator (swtpm) on port ${SWTPM_SERVER_PORT}..."

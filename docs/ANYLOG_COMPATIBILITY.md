@@ -13,6 +13,7 @@ This document details all modifications made to ensure TPM-generated keys and si
 8. [Comparison Table](#comparison-table)
 9. [Verification Checklist](#verification-checklist)
 10. [Example: Complete Workflow](#example-complete-workflow)
+11. [OpenSSL TLS Keys and TPM References](#11-openssl-tls-keys-and-tpm-references)
 
 ---
 
@@ -118,6 +119,39 @@ result = tpm.sign_data(
 
 ### Solution
 Use `-s rsapss` flag in `tpm2_sign` command to use PSS padding.
+
+---
+
+## 11. OpenSSL TLS Keys and TPM References
+
+### Important Distinction
+- The existing AnyLog TPM flow produces TPM tool artifacts such as `.pub`, `.priv`, and `.ctx`
+- Those files are suitable for `tpm2_*` commands and the current signing workflow
+- They are not the same thing as an OpenSSL TLS private key input
+
+### TLS-Specific Solution
+For OpenSSL-based TLS, use the new `create_openssl_tls_key()` method. It generates a TPM-backed
+OpenSSL-readable private key reference file that can be used for TLS runtimes expecting a key file.
+
+### Example
+```python
+from tpm2_api import TPM2API
+
+tpm = TPM2API()
+result = tpm.create_openssl_tls_key(
+    private_key_file="server-tpm-key.pem",
+    public_key_file="server-tpm-key.pub.pem",
+    key_type="rsa",
+    key_size=2048,
+)
+```
+
+### Notes
+- The generated private key file is intended to be a `TSS2 PRIVATE KEY` reference file
+- The raw private key is not exported from the TPM
+- Using this file with Python `ssl.load_cert_chain()` still requires an OpenSSL runtime that loads the `tpm2` provider
+- The TPM API now includes `initialize_openssl_tls_support()` and `create_ssl_context()` helpers to load the provider programmatically without requiring a pre-defined OpenSSL config file
+- If provider-backed loading is unavailable in the Python runtime, terminate TLS in nginx or another TLS proxy
 
 ### Implementation
 ```python
@@ -484,4 +518,3 @@ All TPM keys and signatures are now fully compatible with AnyLog's cryptographic
 - ✅ Same public key format (PEM SubjectPublicKeyInfo)
 
 TPM-generated keys can now be used interchangeably with regular AnyLog keys!
-

@@ -6,6 +6,9 @@ TPM2 Python API - A simple interface for TPM2 operations using system calls
 import os
 import json
 import base64
+import ctypes
+import ctypes.util
+import ssl
 import subprocess
 import tempfile
 from typing import Dict, List, Optional, Any
@@ -100,7 +103,7 @@ class TPM2API:
         """Get TCTI configuration from environment variable"""
         return os.environ.get("TPM2_TCTI") or os.environ.get("TSS2_TCTI") or os.environ.get("TPM2TOOLS_TCTI")
     
-    def __init__(self, tcti_name: Optional[str] = None):
+    def __init__(self, tcti_name: Optional[str] = None, skip_connection_test: bool = False):
         """
         Initialize TPM2 API
         
@@ -122,6 +125,9 @@ class TPM2API:
             
             # Use SWTPM
             tpm = TPM2API("swtpm:host=127.0.0.1,port=2321")
+
+            # Use OpenSSL TPM provider support without probing tpm2-tools
+            tpm = TPM2API(skip_connection_test=True)
         """
         # Priority: explicit parameter > environment variable > auto-detect > default
         if tcti_name is not None:
@@ -142,7 +148,21 @@ class TPM2API:
                     print(f"No hardware TPM detected, using SWTPM default: {self.tcti_name}")
         
         self._set_environment()
-        self._test_connection()
+        self._openssl_provider_handles: List[int] = []
+        self.skip_connection_test = skip_connection_test
+        if not self.skip_connection_test:
+            self._test_connection()
+
+    @classmethod
+    def for_ssl(cls, tcti_name: Optional[str] = None) -> "TPM2API":
+        """
+        Create a TPM2API instance for OpenSSL-provider-backed TLS operations.
+
+        This mode skips the `tpm2_getcap` startup probe so it can be used on
+        systems that have `tpm2-openssl` available but do not have the
+        `tpm2-tools` CLI installed.
+        """
+        return cls(tcti_name=tcti_name, skip_connection_test=True)
     
     def _set_environment(self):
         """Set environment variables for TPM2 tools"""
@@ -224,10 +244,273 @@ class TPM2API:
                     "returncode": result.returncode
                 }
                 
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": (
+                    f"Command not found: {cmd[0]}. Install tpm2-tools and ensure it is on PATH."
+                )
+            }
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "Command timed out"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def _run_external_command(self, cmd: List[str], input_data: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Run a non-tpm2 command while preserving TPM-related environment variables.
+
+        This is used for tools like OpenSSL TPM providers that need access to the
+        same TPM connection but do not accept the tpm2-tools `--tcti` flag.
+
+        Args:
+            cmd: Command list to execute
+            input_data: Optional input data for the command
+
+        Returns:
+            Dictionary with success status and output/error
+        """
+        try:
+            print(f"Running command: {' '.join(cmd)}")
+
+            env = os.environ.copy()
+            env['TSS2_TCTI'] = self.tcti_name
+            env['TPM2TOOLS_TCTI'] = self.tcti_name
+            env.setdefault('TPM2OPENSSL_TCTI', self.tcti_name)
+
+            if input_data:
+                result = subprocess.run(
+                    cmd,
+                    input=input_data,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=env
+                )
+
+            if result.returncode == 0:
+                return {
+                    "success": True,
+                    "output": result.stdout.strip(),
+                    "stderr": result.stderr.strip()
+                }
+
+            return {
+                "success": False,
+                "error": result.stderr.strip() or result.stdout.strip(),
+                "returncode": result.returncode
+            }
+
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Command timed out"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _candidate_openssl_modules_dirs() -> List[str]:
+        """
+        Return likely OpenSSL provider module directories.
+
+        These are only fallbacks. The safest path is still to pass modules_path
+        explicitly when Python's OpenSSL is not using the same installation as
+        the shell `openssl` command.
+        """
+        candidates: List[str] = []
+
+        env_path = os.environ.get("OPENSSL_MODULES")
+        if env_path:
+            candidates.append(env_path)
+
+        try:
+            result = subprocess.run(
+                ["openssl", "version", "-a"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "MODULESDIR:" in line:
+                        modules_dir = line.split("MODULESDIR:", 1)[1].strip().strip('"')
+                        if modules_dir:
+                            candidates.append(modules_dir)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+        candidates.extend([
+            "/opt/homebrew/lib/ossl-modules",
+            "/usr/local/lib/ossl-modules",
+            "/usr/lib/ossl-modules",
+            "/usr/lib64/ossl-modules",
+        ])
+        return candidates
+
+    @classmethod
+    def resolve_openssl_modules_path(cls, modules_path: Optional[str] = None) -> str:
+        """
+        Resolve a usable OpenSSL provider modules directory.
+
+        Args:
+            modules_path: Optional explicit modules directory
+
+        Returns:
+            Existing filesystem path to OpenSSL provider modules
+
+        Raises:
+            FileNotFoundError if no usable directory is found
+        """
+        if modules_path:
+            if os.path.isdir(modules_path):
+                return modules_path
+            raise FileNotFoundError(f"OpenSSL modules directory not found: {modules_path}")
+
+        for candidate in cls._candidate_openssl_modules_dirs():
+            if candidate and os.path.isdir(candidate):
+                return candidate
+
+        searched = ", ".join(cls._candidate_openssl_modules_dirs())
+        raise FileNotFoundError(
+            "Could not locate an OpenSSL provider modules directory. "
+            f"Set OPENSSL_MODULES or pass modules_path explicitly. Searched: {searched}"
+        )
+
+    def initialize_openssl_tls_support(
+        self,
+        modules_path: Optional[str] = None,
+        tcti_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Programmatically load the OpenSSL `default` and `tpm2` providers.
+
+        This avoids requiring an openssl.cnf file before calling
+        `ssl.SSLContext.load_cert_chain()` with a TPM-backed `TSS2 PRIVATE KEY`.
+
+        Args:
+            modules_path: Directory containing OpenSSL provider modules
+            tcti_name: Optional TCTI override for provider-backed OpenSSL calls
+
+        Returns:
+            Dictionary describing the loaded providers and runtime details
+        """
+        try:
+            if tcti_name:
+                self.tcti_name = tcti_name
+                self._set_environment()
+
+            resolved_modules_path = self.resolve_openssl_modules_path(modules_path)
+            os.environ["OPENSSL_MODULES"] = resolved_modules_path
+            os.environ.setdefault("TPM2OPENSSL_TCTI", self.tcti_name)
+
+            libcrypto_path = ctypes.util.find_library("crypto")
+            if not libcrypto_path:
+                return {"success": False, "error": "Unable to locate libcrypto for provider initialization"}
+
+            libcrypto = ctypes.CDLL(libcrypto_path, mode=ctypes.RTLD_GLOBAL)
+
+            libcrypto.OSSL_PROVIDER_set_default_search_path.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            libcrypto.OSSL_PROVIDER_set_default_search_path.restype = ctypes.c_int
+            libcrypto.OSSL_PROVIDER_load.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            libcrypto.OSSL_PROVIDER_load.restype = ctypes.c_void_p
+            libcrypto.OpenSSL_version.argtypes = [ctypes.c_int]
+            libcrypto.OpenSSL_version.restype = ctypes.c_char_p
+
+            if libcrypto.OSSL_PROVIDER_set_default_search_path(None, resolved_modules_path.encode("utf-8")) != 1:
+                return {
+                    "success": False,
+                    "error": f"Failed to set OpenSSL provider search path to {resolved_modules_path}"
+                }
+
+            default_provider = libcrypto.OSSL_PROVIDER_load(None, b"default")
+            if not default_provider:
+                return {"success": False, "error": "Failed to load OpenSSL default provider"}
+
+            tpm2_provider = libcrypto.OSSL_PROVIDER_load(None, b"tpm2")
+            if not tpm2_provider:
+                return {
+                    "success": False,
+                    "error": (
+                        "Failed to load OpenSSL tpm2 provider. "
+                        "Ensure tpm2-openssl is installed and the provider modules path matches "
+                        "the OpenSSL build used by Python."
+                    )
+                }
+
+            # Retain handles for the life of this object so the providers remain loaded.
+            self._openssl_provider_handles = [default_provider, tpm2_provider]
+
+            openssl_runtime = libcrypto.OpenSSL_version(0)
+            openssl_runtime_text = openssl_runtime.decode("utf-8") if openssl_runtime else "unknown"
+
+            return {
+                "success": True,
+                "providers": ["default", "tpm2"],
+                "modules_path": resolved_modules_path,
+                "tcti_name": self.tcti_name,
+                "python_ssl_openssl_version": ssl.OPENSSL_VERSION,
+                "libcrypto_version": openssl_runtime_text,
+                "action": "openssl_tls_support_initialized",
+            }
+        except AttributeError as e:
+            return {
+                "success": False,
+                "error": (
+                    "This OpenSSL build does not expose the provider APIs required for "
+                    f"programmatic TPM provider loading: {e}"
+                )
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def create_ssl_context(
+        self,
+        certfile: str,
+        keyfile: str,
+        password: Optional[str] = None,
+        modules_path: Optional[str] = None,
+        purpose: str = "server",
+        cafile: Optional[str] = None,
+    ) -> ssl.SSLContext:
+        """
+        Create an SSLContext that can consume a TPM-backed OpenSSL key file.
+
+        Args:
+            certfile: PEM certificate file matching the TPM-backed key
+            keyfile: TPM-backed `TSS2 PRIVATE KEY` file
+            password: Optional passphrase protecting the key reference file
+            modules_path: Optional OpenSSL provider modules directory
+            purpose: 'server' or 'client'
+            cafile: Optional CA bundle for client mode
+
+        Returns:
+            Configured ssl.SSLContext instance
+        """
+        init_result = self.initialize_openssl_tls_support(modules_path=modules_path)
+        if not init_result["success"]:
+            raise RuntimeError(init_result["error"])
+
+        normalized_purpose = purpose.lower()
+        if normalized_purpose == "server":
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(certfile=certfile, keyfile=keyfile, password=password)
+        elif normalized_purpose == "client":
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            if cafile:
+                context.load_verify_locations(cafile=cafile)
+            else:
+                context.load_default_certs()
+        else:
+            raise ValueError("purpose must be 'server' or 'client'")
+
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return context
     
     def create_primary_key(self, password: str, hierarchy: str = "o", context_file: str = "primary.ctx",
                           key_size: int = 1024) -> Dict[str, Any]:
@@ -280,6 +563,299 @@ class TPM2API:
             else:
                 return result
                 
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def create_openssl_tls_key(self, private_key_file: str = "server-tpm-key.pem",
+                               public_key_file: Optional[str] = None, key_type: str = "rsa",
+                               key_size: int = 2048, password: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Create a TPM-backed OpenSSL key reference file for TLS use.
+
+        This method uses the OpenSSL TPM provider to generate a `TSS2 PRIVATE KEY`
+        file that can later be used by OpenSSL-aware TLS stacks. The actual private
+        key remains in the TPM; the output file is an OpenSSL-readable reference.
+
+        Args:
+            private_key_file: Output file for the TPM-backed TSS2 private key
+            public_key_file: Optional output file for the PEM public key
+            key_type: Supported values are 'rsa' and 'ecc'
+            key_size: RSA key size in bits (2048 or 3072 recommended)
+            password: Optional passphrase used to encrypt the generated key reference file
+
+        Returns:
+            Dictionary with result information
+        """
+        try:
+            normalized_key_type = key_type.lower()
+            if normalized_key_type == "rsa":
+                if key_size not in [1024, 2048, 3072, 4096]:
+                    return {
+                        "success": False,
+                        "error": f"Unsupported RSA key size: {key_size}. Use 1024, 2048, 3072, or 4096"
+                    }
+                algorithm = "RSA"
+                pkeyopt = f"rsa_keygen_bits:{key_size}"
+            elif normalized_key_type == "ecc":
+                algorithm = "EC"
+                pkeyopt = "ec_paramgen_curve:prime256v1"
+            else:
+                return {"success": False, "error": f"Unsupported key type: {key_type}. Use 'rsa' or 'ecc'"}
+
+            if public_key_file is None:
+                base_name, _ = os.path.splitext(private_key_file)
+                public_key_file = f"{base_name}.pub.pem"
+
+            gen_cmd = [
+                'openssl',
+                'genpkey',
+                '-provider', 'tpm2',
+                '-provider', 'default',
+                '-algorithm', algorithm,
+                '-pkeyopt', pkeyopt,
+                '-out', private_key_file
+            ]
+            if password:
+                gen_cmd.extend(['-aes-256-cbc', '-pass', f'pass:{password}'])
+
+            gen_result = self._run_external_command(gen_cmd)
+            if not gen_result["success"]:
+                return {
+                    "success": False,
+                    "error": gen_result["error"],
+                    "action": "openssl_tls_key_generation_failed"
+                }
+
+            pub_cmd = [
+                'openssl',
+                'pkey',
+                '-provider', 'tpm2',
+                '-provider', 'default',
+                '-in', private_key_file,
+                '-pubout',
+                '-out', public_key_file
+            ]
+            if password:
+                pub_cmd.extend(['-passin', f'pass:{password}'])
+
+            pub_result = self._run_external_command(pub_cmd)
+            if not pub_result["success"]:
+                return {
+                    "success": False,
+                    "error": pub_result["error"],
+                    "private_key_file": private_key_file,
+                    "action": "openssl_tls_public_key_export_failed"
+                }
+
+            return {
+                "success": True,
+                "private_key_file": private_key_file,
+                "public_key_file": public_key_file,
+                "key_type": normalized_key_type,
+                "key_size": key_size if normalized_key_type == "rsa" else None,
+                "password_protected": bool(password),
+                "action": "openssl_tls_key_created"
+            }
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def create_self_signed_certificate(
+        self,
+        private_key_file: str,
+        cert_file: str = "server-cert.pem",
+        subject: str = "/CN=localhost",
+        days: int = 365,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a self-signed certificate using a TPM-backed OpenSSL key reference.
+
+        Args:
+            private_key_file: TPM-backed OpenSSL private key reference file
+            cert_file: Output certificate file
+            subject: OpenSSL subject string, e.g. /CN=localhost
+            days: Validity period
+            password: Optional passphrase protecting the key reference file
+
+        Returns:
+            Dictionary with certificate generation result
+        """
+        try:
+            cmd = [
+                "openssl",
+                "req",
+                "-provider", "tpm2",
+                "-provider", "default",
+                "-key", private_key_file,
+                "-new",
+                "-x509",
+                "-sha256",
+                "-days", str(days),
+                "-subj", subject,
+                "-out", cert_file,
+            ]
+            if password:
+                cmd.extend(["-passin", f"pass:{password}"])
+
+            result = self._run_external_command(cmd)
+            if not result["success"]:
+                return {
+                    "success": False,
+                    "error": result["error"],
+                    "action": "openssl_tls_self_signed_certificate_failed",
+                }
+
+            return {
+                "success": True,
+                "private_key_file": private_key_file,
+                "cert_file": cert_file,
+                "subject": subject,
+                "days": days,
+                "action": "openssl_tls_self_signed_certificate_created",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_openssl_tls_public_key(self, public_key_file: str) -> Dict[str, Any]:
+        """
+        Read the PEM public key generated alongside a TPM-backed OpenSSL TLS key.
+
+        Args:
+            public_key_file: Path to the PEM public key file
+
+        Returns:
+            Dictionary with PEM text and header-stripped base64 contents
+        """
+        try:
+            if not os.path.exists(public_key_file):
+                return {"success": False, "error": f"Public key file not found: {public_key_file}"}
+
+            with open(public_key_file, "r", encoding="utf-8") as f:
+                public_key_text = f.read().strip()
+
+            if not public_key_text:
+                return {"success": False, "error": f"Public key file is empty: {public_key_file}"}
+
+            body_lines = []
+            for line in public_key_text.splitlines():
+                normalized = line.strip()
+                if normalized and not normalized.startswith("-----BEGIN") and not normalized.startswith("-----END"):
+                    body_lines.append(normalized)
+
+            public_key_b64 = "".join(body_lines)
+
+            return {
+                "success": True,
+                "public_key_file": public_key_file,
+                "public_key_text": public_key_text,
+                "public_key": public_key_b64,
+                "format": "pem",
+                "action": "openssl_tls_public_key_retrieved",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def sign_with_openssl_tls_key(
+        self,
+        private_key_file: str,
+        data: str,
+        password: Optional[str] = None,
+        scheme: str = "rsassa",
+        hash_alg: str = "sha256",
+        input_kind: str = "message",
+    ) -> Dict[str, Any]:
+        """
+        Sign data using a TPM-backed OpenSSL TLS key reference file.
+
+        Args:
+            private_key_file: Path to the TPM-backed OpenSSL private key reference file
+            data: Base64 encoded input data
+            password: Optional passphrase protecting the key reference file
+            scheme: RSA signing scheme ("rsassa" or "rsapss")
+            hash_alg: Hash algorithm to use
+            input_kind: Currently supports "message" only
+
+        Returns:
+            Dictionary containing a hex-encoded signature
+        """
+        try:
+            scheme = (scheme or "rsassa").lower()
+            hash_alg = (hash_alg or "sha256").lower()
+            input_kind = (input_kind or "message").lower()
+
+            if scheme not in TPM2_RSA_SCHEMES:
+                return {"success": False, "error": f"Unsupported signing scheme: {scheme}. Use one of {sorted(TPM2_RSA_SCHEMES)}"}
+
+            if hash_alg not in TPM2_HASH_ALGORITHMS:
+                return {"success": False, "error": f"Unsupported hash algorithm: {hash_alg}. Use one of {sorted(TPM2_HASH_ALGORITHMS)}"}
+
+            if input_kind != "message":
+                return {"success": False, "error": "OpenSSL TLS key signing currently supports input_kind='message' only"}
+
+            decoded_data = base64.b64decode(data)
+
+            with tempfile.NamedTemporaryFile(delete=False, mode='wb') as temp_data_file:
+                temp_data_file.write(decoded_data)
+                temp_data_path = temp_data_file.name
+
+            with tempfile.NamedTemporaryFile(delete=False, mode='wb') as temp_sig_file:
+                temp_sig_path = temp_sig_file.name
+
+            try:
+                cmd = [
+                    'openssl',
+                    'dgst',
+                    f'-{hash_alg}',
+                    '-provider', 'tpm2',
+                    '-provider', 'default',
+                    '-sign', private_key_file,
+                    '-out', temp_sig_path,
+                ]
+
+                if scheme == "rsapss":
+                    cmd.extend([
+                        '-sigopt', 'rsa_padding_mode:pss',
+                        '-sigopt', 'rsa_pss_saltlen:-1',
+                    ])
+                else:
+                    cmd.extend(['-sigopt', 'rsa_padding_mode:pkcs1'])
+
+                if password:
+                    cmd.extend(['-passin', f'pass:{password}'])
+
+                cmd.append(temp_data_path)
+
+                result = self._run_external_command(cmd)
+                if not result["success"]:
+                    return {
+                        "success": False,
+                        "error": result["error"],
+                        "action": "openssl_tls_sign_failed"
+                    }
+
+                with open(temp_sig_path, 'rb') as f:
+                    signature_bytes = f.read()
+
+                return {
+                    "success": True,
+                    "private_key_file": private_key_file,
+                    "signature": signature_bytes.hex(),
+                    "signature_format": "hex",
+                    "scheme": scheme,
+                    "hash_alg": hash_alg,
+                    "input_kind": input_kind,
+                    "action": "openssl_tls_data_signed",
+                }
+            finally:
+                try:
+                    os.unlink(temp_data_path)
+                except OSError:
+                    pass
+                try:
+                    os.unlink(temp_sig_path)
+                except OSError:
+                    pass
         except Exception as e:
             return {"success": False, "error": str(e)}
     

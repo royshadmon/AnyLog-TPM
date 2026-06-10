@@ -17,6 +17,14 @@ cd "$PROJECT_ROOT"
 # Use instances file only (run from project root)
 COMPOSE_FILES="-f multiple-instances/docker-compose.instances.yaml"
 
+if command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+elif docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker compose"
+else
+    DOCKER_COMPOSE_CMD="docker-compose"
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -73,17 +81,30 @@ EOF
 
 # Function to get list of all node directory numbers (instance index)
 get_all_nodes() {
-    shopt -s nullglob
-    local d _base _n
-    for d in "$SHARED_DATA_ROOT/${SHARED_DIR_PREFIX}"[0-9]*; do
-        [ -d "$d" ] || continue
-        _base="$(basename "$d")"
-        _n="${_base#"$SHARED_DIR_PREFIX"}"
-        if [[ "$_n" =~ ^[0-9]+$ ]]; then
-            echo "$_n"
-        fi
-    done | sort -n
-    shopt -u nullglob
+    {
+        shopt -s nullglob
+        local d _base _n
+        for d in "$SHARED_DATA_ROOT/${SHARED_DIR_PREFIX}"[0-9]*; do
+            [ -d "$d" ] || continue
+            _base="$(basename "$d")"
+            _n="${_base#"$SHARED_DIR_PREFIX"}"
+            if [[ "$_n" =~ ^[0-9]+$ ]]; then
+                echo "$_n"
+            fi
+        done
+        shopt -u nullglob
+
+        docker ps -a --format '{{.Names}}' 2>/dev/null \
+            | sed -n 's/^tpm2-api-node\([0-9][0-9]*\)$/\1/p' || true
+    } | sort -n -u
+}
+
+get_compose_services() {
+    if [ ! -f "$INSTANCES_DIR/docker-compose.instances.yaml" ]; then
+        return
+    fi
+
+    $DOCKER_COMPOSE_CMD $COMPOSE_FILES ps --services 2>/dev/null || true
 }
 
 # Function to parse node list
@@ -111,9 +132,9 @@ stop_containers() {
         local service="tpm2-api-node${node}"
         local container="tpm2-api-node${node}"
         
-        if docker-compose $COMPOSE_FILES ps --services 2>/dev/null | grep -q "^${service}$"; then
+        if get_compose_services | grep -q "^${service}$"; then
             print_info "Stopping ${service}..."
-            docker-compose $COMPOSE_FILES stop "$service" 2>/dev/null || true
+            $DOCKER_COMPOSE_CMD $COMPOSE_FILES stop "$service" 2>/dev/null || true
             print_success "Stopped ${service}"
         elif docker ps -a --format '{{.Names}}' | grep -q "^${container}$"; then
             print_info "Stopping ${container}..."
@@ -133,13 +154,13 @@ start_containers() {
     for node in $nodes; do
         local service="tpm2-api-node${node}"
         
-        if ! docker-compose $COMPOSE_FILES config --services 2>/dev/null | grep -q "^${service}$"; then
+        if [ ! -f "$INSTANCES_DIR/docker-compose.instances.yaml" ] || ! $DOCKER_COMPOSE_CMD $COMPOSE_FILES config --services 2>/dev/null | grep -q "^${service}$"; then
             print_warning "Service ${service} not found in docker-compose, skipping..."
             continue
         fi
         
         print_info "Starting ${service}..."
-        if docker-compose $COMPOSE_FILES up -d "$service" >/dev/null 2>&1; then
+        if $DOCKER_COMPOSE_CMD $COMPOSE_FILES up -d "$service" >/dev/null 2>&1; then
             print_success "Started ${service}"
         else
             print_error "Failed to start ${service}"
@@ -302,7 +323,7 @@ reset_all() {
     # Take down containers
     if [ -f "$INSTANCES_DIR/docker-compose.instances.yaml" ]; then
         print_info "Stopping and removing containers..."
-        docker-compose $COMPOSE_FILES down 2>/dev/null || true
+        $DOCKER_COMPOSE_CMD $COMPOSE_FILES down 2>/dev/null || true
         print_success "Containers removed"
     fi
     

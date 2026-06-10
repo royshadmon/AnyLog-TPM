@@ -82,6 +82,9 @@ See **[multiple-instances/README.md](multiple-instances/README.md)** for TPM ins
 ### TPM2 Operations
 - `POST /tpm2/create-primary` - Create a primary key
 - `POST /tpm2/create-key` - Create a key under a parent (supports RSA, ECC, AES128, AES256)
+- `POST /tpm2/create-openssl-tls-key` - Create a TPM-backed OpenSSL `TSS2 PRIVATE KEY` reference file for TLS
+- `POST /tpm2/create-openssl-tls-certificate` - Create a self-signed certificate using a TPM-backed OpenSSL TLS key
+- `POST /tpm2/read-file` - Read a generated file from the API working directory
 - `POST /tpm2/load-key` - Load a key into TPM context
 - `POST /tpm2/make-persistent` - Make a key persistent
 - `POST /tpm2/flush-context` - Flush TPM contexts
@@ -126,6 +129,25 @@ curl -X POST -H "Content-Type: application/json" \
 curl -X POST -H "Content-Type: application/json" \
   -d '{"parent_context": "primary.ctx", "key_type": "rsa", "public_file": "rsa.pub", "private_file": "rsa.priv", "password": "abc"}' \
   http://localhost:8000/tpm2/create-key
+```
+
+### Create TPM-Backed OpenSSL TLS Key
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"private_key_file": "server-tpm-key.pem", "public_key_file": "server-tpm-key.pub.pem", "key_type": "rsa", "key_size": 2048, "password": "abc"}' \
+  http://localhost:8000/tpm2/create-openssl-tls-key
+```
+
+This endpoint creates a TPM-backed OpenSSL key reference file for TLS use. The generated
+`server-tpm-key.pem` file is intended to be a `TSS2 PRIVATE KEY`-style reference that
+OpenSSL can use with the `tpm2` provider. The raw private key remains protected by the TPM.
+If `password` is provided, the generated key reference file is encrypted with that passphrase.
+
+### Create TPM-Backed TLS Certificate
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"private_key_file": "server-tpm-key.pem", "cert_file": "server-cert.pem", "subject": "/CN=localhost", "days": 30, "password": "abc"}' \
+  http://localhost:8000/tpm2/create-openssl-tls-certificate
 ```
 
 ### Create AES Key
@@ -421,6 +443,115 @@ if result["success"]:
     print(f"Verification: {verify_result['verified']}")
 ```
 
+### TPM-Backed OpenSSL TLS Key Usage
+```python
+from tpm2_api import TPM2API
+
+tpm = TPM2API()
+
+result = tpm.create_openssl_tls_key(
+    private_key_file="server-tpm-key.pem",
+    public_key_file="server-tpm-key.pub.pem",
+    key_type="rsa",
+    key_size=2048,
+    password="abc",
+)
+
+print(result)
+```
+
+Use the resulting private key reference file with an OpenSSL runtime that loads the
+`tpm2` provider. This file is not a raw PEM private key export from the TPM.
+
+For example:
+
+```python
+context.load_cert_chain(
+    certfile="server-cert.pem",
+    keyfile="server-tpm-key.pem",
+)
+```
+
+This requires a Python/OpenSSL runtime configured for the `tpm2-openssl` provider.
+If your runtime cannot load that provider, terminate TLS in nginx or another proxy
+that can use the TPM-backed key instead.
+
+If you do not want to manage an `openssl.cnf`, the TPM API now includes a
+programmatic provider bootstrap:
+
+```python
+from tpm2_api import TPM2API
+
+tpm = TPM2API()
+context = tpm.create_ssl_context(
+    certfile="server-cert.pem",
+    keyfile="server-tpm-key.pem",
+    password="abc",
+    purpose="server",
+)
+```
+
+If your machine only needs the OpenSSL/TLS flow and does not have `tpm2-tools`
+installed, use:
+
+```python
+from tpm2_api import TPM2API
+
+tpm = TPM2API.for_ssl()
+context = tpm.create_ssl_context(
+    certfile="server-cert.pem",
+    keyfile="server-tpm-key.pem",
+    password="abc",
+    purpose="server",
+)
+```
+
+That helper:
+- Locates the OpenSSL provider modules directory
+- Loads the `default` and `tpm2` providers via `ctypes`
+- Creates an `ssl.SSLContext` and calls `load_cert_chain()` with the TPM-backed key
+
+For a complete local test server, see [ssl_rest_server_example.py](/Users/roy/Github-Repos/AnyLog-TPM/ssl_rest_server_example.py).
+
+For the simplest possible TSS2 TLS smoke test:
+
+```bash
+python3 simple_tss2_tls_server.py
+curl -k https://127.0.0.1:8443/
+```
+
+On startup, `simple_tss2_tls_server.py` creates `server-key.tss2`,
+`server-key.pub.pem`, and `server-cert.pem` by calling the TPM REST API if they
+are missing, downloads those generated files from the API, then starts HTTPS. It
+assumes your TPM REST API and software TPM are already running. Use `--api-base`
+if the API is not on `http://127.0.0.1:8000`, `--force-generate` to replace the
+generated files, or `--no-generate` to only load existing files. When the API is
+running in Docker, publish the swtpm port too, for example `-p 2321:2321`, so the
+local OpenSSL TPM provider can reach the same TPM used to create the key.
+The expected response is `ok`. That confirms the generated TSS2 key reference can
+be loaded by the OpenSSL TPM provider and used in a real TLS handshake.
+
+If the TPM REST API is running in Docker, the most reliable test is to run the
+HTTPS server inside that same container:
+
+```bash
+docker run --rm \
+  -p 8001:8000 \
+  -p 8443:8443 \
+  --name tpm2-test \
+  tpm2-api python3 /opt/tpm2_rest_api.py
+
+docker exec tpm2-test \
+  python3 /opt/simple_tss2_tls_server.py \
+  --api-base http://127.0.0.1:8000 \
+  --host 0.0.0.0 \
+  --force-generate
+
+curl -k https://127.0.0.1:8443/
+```
+
+This keeps the TPM provider, TCTI, TSS2 key, and swtpm state in one environment.
+
 ### Complete Encryption/Decryption Workflow Example
 ```python
 import base64
@@ -661,6 +792,75 @@ tpm = TPM2API("tabrmd:")
 2. Ensure user is in `tss` group: `sudo usermod -aG tss $USER` (then log out/in)
 3. Verify TPM device exists: `ls -l /dev/tpm*`
 4. (Optional) Start tabrmd daemon: `sudo systemctl start tpm2-abrmd`
+
+#### macOS OpenSSL TPM Provider Setup
+macOS does not currently have a simple packaged `tpm2-openssl` install path comparable to Debian/Ubuntu.
+The working approach is to build `tpm2-tss` and `tpm2-openssl` from source against Homebrew OpenSSL.
+
+**Install Homebrew dependencies:**
+```bash
+brew install openssl@3 json-c pkg-config automake autoconf libtool autoconf-archive
+```
+
+**Build and install `tpm2-tss`:**
+```bash
+git clone https://github.com/tpm2-software/tpm2-tss.git
+cd tpm2-tss
+make distclean 2>/dev/null || true
+
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig:/opt/homebrew/opt/json-c/lib/pkgconfig"
+
+./bootstrap
+./configure \
+  --prefix=/opt/homebrew \
+  --disable-tcti-cmd \
+  --disable-fapi \
+  --disable-policy
+make
+make install
+```
+
+The `--disable-*` flags above avoid macOS-incompatible build paths such as Linux-only `prctl` usage
+and FAPI/policy features that can pull in unavailable headers.
+
+**Build and install `tpm2-openssl`:**
+```bash
+git clone https://github.com/tpm2-software/tpm2-openssl.git
+cd tpm2-openssl
+make distclean 2>/dev/null || true
+
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$(brew --prefix openssl@3)/lib/pkgconfig"
+export CPPFLAGS="-I/opt/homebrew/include -I$(brew --prefix openssl@3)/include"
+export LDFLAGS="-L/opt/homebrew/lib -L$(brew --prefix openssl@3)/lib"
+export CFLAGS="-Wno-error=deprecated-declarations"
+export CXXFLAGS="-Wno-error=deprecated-declarations"
+
+./bootstrap
+./configure
+make
+make install
+```
+
+The `CFLAGS`/`CXXFLAGS` override is needed because macOS marks `sem_init` / `sem_destroy`
+deprecated and the provider build otherwise treats those warnings as errors.
+
+**Load the provider at runtime:**
+```bash
+export OPENSSL_MODULES="$(brew --prefix openssl@3)/lib/ossl-modules"
+```
+
+**Verify the provider is available:**
+```bash
+openssl list -providers -provider tpm2 -provider default
+openssl pkey \
+  -provider tpm2 \
+  -provider default \
+  -in /path/to/your-tss2-private-key.key \
+  -pubout
+```
+
+If the `openssl pkey ... -pubout` test works, the local OpenSSL runtime can read your
+`TSS2 PRIVATE KEY` file and Python's OpenSSL integration has a chance to work as well.
 
 **SSH to Remote Hardware TPM:**
 When SSH'ing to a remote Ubuntu machine with hardware TPM:
