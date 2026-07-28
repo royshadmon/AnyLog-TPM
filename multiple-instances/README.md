@@ -29,6 +29,48 @@ docker exec tpm2-api-node1 \
 curl -k https://127.0.0.1:8443/
 ```
 
+To run node containers in TPM HTTPS gateway mode, where the TPM-aware container
+terminates HTTPS and forwards traffic to a plain HTTP app container, regenerate
+the compose file with:
+
+```bash
+ENABLE_TPM_GATEWAY=1 \
+TPM_GATEWAY_UPSTREAM_BASE_URL=http://app:8080 \
+./multiple-instances/setup-multiple-instances.sh 1
+
+docker compose -f multiple-instances/docker-compose.instances.yaml up -d
+```
+
+If you use Roy's shell helper, the same flow is:
+
+```bash
+build tpm run 1 http://app:8080
+```
+
+To publish node 1 on a different HTTPS host port:
+
+```bash
+build tpm run 1 http://app:8080 9443
+```
+
+To run multiple TPM gateways with different upstream AnyLog nodes and different
+HTTPS host ports, pass comma-separated lists:
+
+```bash
+build tpm run 2 http://app1:8080,http://app2:8080 9443,9444
+```
+
+Validation rules:
+
+- if `count` is `2`, the upstream list must contain exactly `2` values
+- if an HTTPS host-port list is provided, it must also contain exactly `2` values
+
+In gateway mode:
+
+- `http://127.0.0.1:8001` is still the TPM REST API
+- `https://127.0.0.1:8443` is the TPM-backed HTTPS gateway
+- requests to `/health`, `/request-info`, and `/echo` are forwarded to the HTTP app
+
 Each instance's SWTPM server/control ports are published to the host by default,
 so host-side OpenSSL TPM provider tests can use the generated TSS2 keys. To
 disable SWTPM port publishing:

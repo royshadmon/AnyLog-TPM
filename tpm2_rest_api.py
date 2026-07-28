@@ -49,11 +49,18 @@ def _load_keys_metadata() -> dict:
     return metadata
 
 
-def _save_keys_metadata(metadata: dict) -> None:
+def _save_keys_metadata(
+    metadata: dict,
+    verify_key_name: str | None = None,
+    verification_password: str | None = None,
+) -> dict | None:
+    del verify_key_name, verification_password
+
     temp_file = f"{KEYS_METADATA_FILE}.tmp"
     with open(temp_file, "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)
     os.replace(temp_file, KEYS_METADATA_FILE)
+    return None
 
 
 def _infer_key_name(*file_names: str | None) -> str | None:
@@ -72,6 +79,18 @@ def _infer_key_name(*file_names: str | None) -> str | None:
     return None
 
 
+def _infer_file_identity_name(*file_names: str | None) -> str | None:
+    for file_name in file_names:
+        if not file_name:
+            continue
+
+        base_name = os.path.basename(os.path.normpath(file_name))
+        if base_name:
+            return base_name
+
+    return None
+
+
 def _record_key_metadata(
     *,
     key_name: str | None = None,
@@ -81,6 +100,7 @@ def _record_key_metadata(
     private_file: str | None = None,
     context_file: str | None = None,
     persistent_handle: Any = None,
+    password: str | None = None,
 ) -> dict:
     resolved_key_name = key_name or _infer_key_name(public_file, private_file, context_file)
     if not resolved_key_name:
@@ -111,7 +131,117 @@ def _record_key_metadata(
     return key_metadata
 
 
-def _record_persistent_handle(context_file: str, persistent_handle: Any) -> dict | None:
+def _normalize_metadata_path(file_name: str | None) -> str | None:
+    if not file_name:
+        return None
+    return os.path.normpath(file_name)
+
+
+def _find_key_name_by_file(metadata: dict, file_name: str | None, *field_names: str) -> str | None:
+    normalized_file_name = _normalize_metadata_path(file_name)
+    if not normalized_file_name:
+        return None
+
+    for key_name, key_metadata in metadata.items():
+        for field_name in field_names:
+            metadata_file_name = _normalize_metadata_path(key_metadata.get(field_name))
+            if metadata_file_name == normalized_file_name:
+                return key_name
+
+    return None
+
+
+def _record_openssl_tls_key_metadata(
+    *,
+    key_name: str | None = None,
+    key_type: str | None = None,
+    private_key_file: str | None = None,
+    public_key_file: str | None = None,
+    key_size: int | None = None,
+    password_protected: bool | None = None,
+    password: str | None = None,
+) -> dict:
+    resolved_key_name = key_name or _infer_file_identity_name(private_key_file, public_key_file)
+    if not resolved_key_name:
+        raise ValueError("Could not determine key_name for OpenSSL TLS key metadata")
+
+    metadata = _load_keys_metadata()
+    now = int(time.time())
+    key_metadata = metadata.get(resolved_key_name, {})
+    key_metadata.setdefault("key_name", resolved_key_name)
+    key_metadata.setdefault("created_at", now)
+
+    updates = {
+        "key_type": key_type,
+        "key_usage": "openssl_tls",
+        "private_key_file": private_key_file,
+        "tss2_private_key_file": private_key_file,
+        "public_key_file": public_key_file,
+        "key_size": key_size,
+        "password_protected": password_protected,
+    }
+    for key, value in updates.items():
+        if value is not None:
+            key_metadata[key] = value
+
+    key_metadata["updated_at"] = now
+    metadata[resolved_key_name] = key_metadata
+    _save_keys_metadata(metadata)
+
+    return key_metadata
+
+
+def _record_openssl_tls_certificate_metadata(
+    *,
+    key_name: str | None = None,
+    private_key_file: str | None = None,
+    cert_file: str | None = None,
+    subject: str | None = None,
+    days: int | None = None,
+    password: str | None = None,
+) -> dict:
+    metadata = _load_keys_metadata()
+    resolved_key_name = key_name or _find_key_name_by_file(
+        metadata,
+        private_key_file,
+        "private_key_file",
+        "tss2_private_key_file",
+    ) or _infer_file_identity_name(private_key_file, cert_file)
+
+    if not resolved_key_name:
+        raise ValueError("Could not determine key_name for OpenSSL TLS certificate metadata")
+
+    now = int(time.time())
+    key_metadata = metadata.get(resolved_key_name, {})
+    key_metadata.setdefault("key_name", resolved_key_name)
+    key_metadata.setdefault("created_at", now)
+
+    updates = {
+        "key_usage": "openssl_tls",
+        "private_key_file": private_key_file,
+        "tss2_private_key_file": private_key_file,
+        "cert_file": cert_file,
+        "certificate_file": cert_file,
+        "certificate_subject": subject,
+        "certificate_days": days,
+        "certificate_created_at": now,
+    }
+    for key, value in updates.items():
+        if value is not None:
+            key_metadata[key] = value
+
+    key_metadata["updated_at"] = now
+    metadata[resolved_key_name] = key_metadata
+    _save_keys_metadata(metadata)
+
+    return key_metadata
+
+
+def _record_persistent_handle(
+    context_file: str,
+    persistent_handle: Any,
+    password: str | None = None,
+) -> dict | None:
     metadata = _load_keys_metadata()
     matched_key = None
 
@@ -148,6 +278,7 @@ class CreateKeyRequest(BaseModel):
     password: str
 
 class CreateOpenSSLTLSKeyRequest(BaseModel):
+    key_name: str | None = None
     private_key_file: str = "server-tpm-key.pem"
     public_key_file: str = "server-tpm-key.pub.pem"
     key_type: str = "rsa"
@@ -155,6 +286,7 @@ class CreateOpenSSLTLSKeyRequest(BaseModel):
     password: str | None = None
 
 class CreateOpenSSLTLSCertificateRequest(BaseModel):
+    key_name: str | None = None
     private_key_file: str = "server-tpm-key.pem"
     cert_file: str = "server-cert.pem"
     subject: str = "/CN=localhost"
@@ -164,6 +296,15 @@ class CreateOpenSSLTLSCertificateRequest(BaseModel):
 class GetOpenSSLTLSPublicKeyRequest(BaseModel):
     public_key_file: str
 
+class CheckKeyAvailableRequest(BaseModel):
+    key_info: dict[str, Any] | None = None
+    context_file: str | None = None
+    persistent_handle: Union[int, str] | None = None
+    private_key_file: str | None = None
+    public_key_file: str | None = None
+    certificate_file: str | None = None
+    password: str | None = None
+
 class SignOpenSSLTLSKeyRequest(BaseModel):
     private_key_file: str
     data: str  # base64 encoded data
@@ -171,6 +312,23 @@ class SignOpenSSLTLSKeyRequest(BaseModel):
     scheme: str = "rsassa"
     hash_alg: str = "sha256"
     input_kind: str = "message"
+    salt_length: int | None = None
+
+class OpenSSLProviderKeyInfoRequest(BaseModel):
+    private_key_file: str | None = None
+    public_key_file: str | None = None
+    certificate_file: str | None = None
+    password: str | None = None
+
+class OpenSSLProviderSignRequest(BaseModel):
+    private_key_file: str
+    data: str | None = None
+    digest_base64: str | None = None
+    password: str | None = None
+    scheme: str = "rsassa"
+    hash_alg: str = "sha256"
+    input_kind: str = "digest"
+    salt_length: int | None = None
 
 class ImportKeyRequest(BaseModel):
     parent_context: str
@@ -393,6 +551,26 @@ async def get_key_metadata(key_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/tpm2/check-key-available")
+async def check_key_available(request: CheckKeyAvailableRequest):
+    """Check whether generated key artifacts exist and are TPM-backed."""
+    if tpm_api is None:
+        raise HTTPException(status_code=503, detail="TPM2 API not available")
+
+    try:
+        result = tpm_api.check_key_available(
+            key_info=request.key_info,
+            context_file=request.context_file,
+            persistent_handle=request.persistent_handle,
+            private_key_file=request.private_key_file,
+            public_key_file=request.public_key_file,
+            certificate_file=request.certificate_file,
+            password=request.password,
+        )
+        return JSONResponse(content=result, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # TPM2 operation endpoints
 @app.post("/tpm2/create-primary")
 async def create_primary_key(request: PrimaryKeyRequest):
@@ -440,6 +618,7 @@ async def create_key(request: CreateKeyRequest):
                 public_file=result.get("public_file", request.public_file),
                 private_file=result.get("private_file", request.private_file),
                 context_file=result.get("context_file", request.context_file),
+                password=request.password,
             )
             result["key_metadata"] = key_metadata
             return JSONResponse(content=result, status_code=200)
@@ -465,6 +644,16 @@ async def create_openssl_tls_key(request: CreateOpenSSLTLSKeyRequest):
         )
 
         if result["success"]:
+            key_metadata = _record_openssl_tls_key_metadata(
+                key_name=request.key_name,
+                key_type=result.get("key_type", request.key_type),
+                private_key_file=result.get("private_key_file", request.private_key_file),
+                public_key_file=result.get("public_key_file", request.public_key_file),
+                key_size=result.get("key_size", request.key_size),
+                password_protected=result.get("password_protected", bool(request.password)),
+                password=request.password,
+            )
+            result["key_metadata"] = key_metadata
             return JSONResponse(content=result, status_code=200)
         else:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -488,6 +677,15 @@ async def create_openssl_tls_certificate(request: CreateOpenSSLTLSCertificateReq
         )
 
         if result["success"]:
+            key_metadata = _record_openssl_tls_certificate_metadata(
+                key_name=request.key_name,
+                private_key_file=result.get("private_key_file", request.private_key_file),
+                cert_file=result.get("cert_file", request.cert_file),
+                subject=result.get("subject", request.subject),
+                days=result.get("days", request.days),
+                password=request.password,
+            )
+            result["key_metadata"] = key_metadata
             return JSONResponse(content=result, status_code=200)
         else:
             raise HTTPException(status_code=400, detail=result["error"])
@@ -528,6 +726,7 @@ async def sign_openssl_tls_key(request: SignOpenSSLTLSKeyRequest):
             scheme=request.scheme,
             hash_alg=request.hash_alg,
             input_kind=request.input_kind,
+            salt_length=request.salt_length,
         )
 
         if result["success"]:
@@ -535,6 +734,70 @@ async def sign_openssl_tls_key(request: SignOpenSSLTLSKeyRequest):
         else:
             raise HTTPException(status_code=400, detail=result["error"])
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tpm2/openssl-provider/key-info")
+async def openssl_provider_key_info(request: OpenSSLProviderKeyInfoRequest):
+    """Return public key metadata needed by a REST-backed OpenSSL provider"""
+    if tpm_api is None:
+        raise HTTPException(status_code=503, detail="TPM2 API not available")
+
+    try:
+        result = tpm_api.get_openssl_provider_key_info(
+            private_key_file=request.private_key_file,
+            public_key_file=request.public_key_file,
+            certificate_file=request.certificate_file,
+            password=request.password,
+        )
+
+        if result["success"]:
+            return JSONResponse(content=result, status_code=200)
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tpm2/openssl-provider/sign")
+async def openssl_provider_sign(request: OpenSSLProviderSignRequest):
+    """Sign a message or precomputed digest for a REST-backed OpenSSL provider"""
+    if tpm_api is None:
+        raise HTTPException(status_code=503, detail="TPM2 API not available")
+
+    try:
+        input_kind = (request.input_kind or "digest").lower()
+        if input_kind == "digest":
+            data = request.digest_base64 or request.data
+        else:
+            data = request.data
+
+        if not data:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide digest_base64 for input_kind='digest' or data for input_kind='message'",
+            )
+
+        result = tpm_api.sign_with_openssl_tls_key(
+            private_key_file=request.private_key_file,
+            data=data,
+            password=request.password,
+            scheme=request.scheme,
+            hash_alg=request.hash_alg,
+            input_kind=input_kind,
+            salt_length=request.salt_length,
+        )
+
+        if result["success"]:
+            result["signature_base64"] = base64.b64encode(
+                bytes.fromhex(result["signature"])
+            ).decode("ascii")
+            return JSONResponse(content=result, status_code=200)
+        else:
+            raise HTTPException(status_code=400, detail=result["error"])
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -560,6 +823,7 @@ async def import_key(request: ImportKeyRequest):
                 parent_context=result.get("parent_context", request.parent_context),
                 public_file=result.get("public_file", request.public_file),
                 private_file=result.get("private_file", request.private_file),
+                password=request.password,
             )
             result["key_metadata"] = key_metadata
             return JSONResponse(content=result, status_code=200)
@@ -592,6 +856,7 @@ async def load_key(request: LoadKeyRequest):
                 public_file=request.public_file,
                 private_file=request.private_file,
                 context_file=result.get("context_file", request.context_file),
+                password=request.password,
             )
             result["key_metadata"] = key_metadata
             return JSONResponse(content=result, status_code=200)
@@ -618,6 +883,7 @@ async def make_persistent(request: PersistentRequest):
             key_metadata = _record_persistent_handle(
                 context_file=request.context_file,
                 persistent_handle=result.get("persistent_handle", request.persistent_handle),
+                password=request.password,
             )
             if key_metadata is not None:
                 result["key_metadata"] = key_metadata

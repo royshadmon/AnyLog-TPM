@@ -7,6 +7,7 @@ RUN apt update && \
     tpm2-tools tpm2-abrmd tpm2-openssl swtpm \
     autoconf \
     git \
+    curl \
     libtool \
     pkg-config \
     libssl-dev \
@@ -55,18 +56,20 @@ RUN ./bootstrap && \
 RUN apt-get update && apt-get install -y swtpm swtpm-tools
 
 # Install Python dependencies
-RUN pip3 install --break-system-packages fastapi uvicorn pydantic python-multipart
+COPY requirements.txt /opt/requirements.txt
+RUN pip3 install --break-system-packages -r /opt/requirements.txt
 
 # Copy Python API files
 COPY tpm2_api.py /opt/tpm2_api.py
 COPY tpm2_rest_api.py /opt/tpm2_rest_api.py
 COPY tpm2_cli.py /opt/tpm2_cli.py
 COPY simple_tss2_tls_server.py /opt/simple_tss2_tls_server.py
-COPY requirements.txt /opt/requirements.txt
+COPY scripts/start_tpm_gateway_container.sh /opt/start_tpm_gateway_container.sh
 
 # Make CLI executable
 RUN chmod +x /opt/tpm2_cli.py
 RUN chmod +x /opt/simple_tss2_tls_server.py
+RUN chmod +x /opt/start_tpm_gateway_container.sh
 
 # Define entrypoint script
 COPY entrypoint.sh /entrypoint.sh

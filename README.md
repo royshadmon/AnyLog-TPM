@@ -74,6 +74,137 @@ docker-compose -f multiple-instances/docker-compose.instances.yaml up -d
 
 See **[multiple-instances/README.md](multiple-instances/README.md)** for TPM instances. For AnyLog nodes, see **[multiple-nodes/README.md](multiple-nodes/README.md)**.
 
+## Minimal TPM-Backed HTTPS Server
+
+This repo includes a small HTTPS example that generates a TPM-backed OpenSSL
+TSS2 key reference, creates a localhost certificate, and serves HTTPS with TLS
+private-key operations performed by the running TPM.
+
+For a short environment guide that explains the host/container URL split,
+container reuse, common errors, and the expected shared directory, see
+**[docs/TPM_HTTPS_DEMO.md](docs/TPM_HTTPS_DEMO.md)**.
+
+For application deployment, prefer the TPM HTTPS gateway pattern:
+
+```text
+client -> HTTPS TPM gateway container -> HTTP app container
+```
+
+The demo compose for that pattern is:
+
+```bash
+docker compose -f docker-compose.tpm-gateway-demo.yaml up --build
+```
+
+### Dependencies
+
+- Docker
+- `curl`
+- The project Docker image installs `swtpm`, `tpm2-tools`, OpenSSL, and
+  `tpm2-openssl`, so the host does not need native TPM/OpenSSL provider setup
+  for the Docker-based example.
+
+### Setup
+
+```bash
+./scripts/setup_tpm_https_example.sh
+```
+
+The setup script is the standalone-demo path. It builds the image, starts a TPM
+API container named `tpm2-https-example`, generates the TPM-backed key
+reference, exports the public key, and writes a self-signed certificate. The
+certificate uses `CN=localhost` and SANs for `localhost` and `127.0.0.1`.
+
+Optional environment overrides:
+
+```bash
+KEY_FILE=server-key.tss2 CERT_FILE=server.crt KEY_SIZE=2048 CERT_DAYS=30 \
+  ./scripts/setup_tpm_https_example.sh
+```
+
+Set `KEY_PASSWORD` if you want the TSS2 key reference file encrypted with a
+passphrase. Do not put secrets in source-controlled files.
+
+### Run
+
+```bash
+./scripts/run_tpm_https_server.sh
+```
+
+You can also point the script at a specific TPM REST API host and port:
+
+```bash
+./scripts/run_tpm_https_server.sh --tpm-ip 192.168.0.138 --port 8001
+```
+
+By default, the run script prefers to reuse an existing TPM API container and
+shared directory. If it finds a compatible running container, it waits for the
+REST API health check, reuses existing TLS material when present, and generates
+missing TPM-backed TLS material before starting HTTPS.
+
+In the current multi-instance demo environment, the expected defaults are:
+
+- host TPM API URL: `http://127.0.0.1:8001`
+- host shared directory: `multiple-instances/tpm_shared_dir1`
+- host HTTPS URL: `https://127.0.0.1:8443`
+
+If no existing TPM API container is running and you intentionally want the
+script to start a fresh standalone TPM stack, use:
+
+```bash
+START_TPM_CONTAINER=1 ./scripts/run_tpm_https_server.sh
+```
+
+To require pre-existing key/certificate files and fail if they are missing:
+
+```bash
+./scripts/run_tpm_https_server.sh --no-generate
+```
+
+### Test
+
+```bash
+curl -k https://127.0.0.1:8443/
+curl -k https://127.0.0.1:8443/health
+```
+
+Expected responses:
+
+```text
+TPM-backed HTTPS server is running
+{"status": "ok"}
+```
+
+### Verify The Key Is TPM-Backed
+
+The private key file should be a TSS2 reference, not a normal PEM private key:
+
+```bash
+head -2 multiple-instances/tpm_shared_dir1/server-key.tss2
+```
+
+Expected header:
+
+```text
+-----BEGIN TSS2 PRIVATE KEY-----
+```
+
+Ask the TPM API to verify the generated key/certificate artifacts:
+
+```bash
+curl -sS -X POST -H "Content-Type: application/json" \
+  -d '{"private_key_file":"server-key.tss2","public_key_file":"server-key.pub.pem","certificate_file":"server.crt"}' \
+  http://127.0.0.1:8001/tpm2/check-key-available
+```
+
+You can also prove OpenSSL can only use the key via the TPM provider:
+
+```bash
+docker exec -w /opt/shared tpm2-api-node1 \
+  openssl pkey -provider tpm2 -provider default \
+  -in server-key.tss2 -pubout -noout
+```
+
 ## API Endpoints
 
 ### Health Check
@@ -84,6 +215,7 @@ See **[multiple-instances/README.md](multiple-instances/README.md)** for TPM ins
 - `POST /tpm2/create-key` - Create a key under a parent (supports RSA, ECC, AES128, AES256)
 - `POST /tpm2/create-openssl-tls-key` - Create a TPM-backed OpenSSL `TSS2 PRIVATE KEY` reference file for TLS
 - `POST /tpm2/create-openssl-tls-certificate` - Create a self-signed certificate using a TPM-backed OpenSSL TLS key
+- `POST /tpm2/check-key-available` - Check generated key artifacts and confirm TPM-backed storage
 - `POST /tpm2/read-file` - Read a generated file from the API working directory
 - `POST /tpm2/load-key` - Load a key into TPM context
 - `POST /tpm2/make-persistent` - Make a key persistent
@@ -149,6 +281,18 @@ curl -X POST -H "Content-Type: application/json" \
   -d '{"private_key_file": "server-tpm-key.pem", "cert_file": "server-cert.pem", "subject": "/CN=localhost", "days": 30, "password": "abc"}' \
   http://localhost:8000/tpm2/create-openssl-tls-certificate
 ```
+
+### Check Generated Key Availability
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"private_key_file": "server-tpm-key.pem", "public_key_file": "server-tpm-key.pub.pem", "certificate_file": "server-cert.pem", "password": "abc"}' \
+  http://localhost:8000/tpm2/check-key-available
+```
+
+The check verifies that generated artifacts exist, confirms TPM storage using a
+context file, persistent handle, or OpenSSL `TSS2 PRIVATE KEY` reference, and
+compares public key or certificate artifacts back to the TPM-backed key when a
+private key reference is supplied.
 
 ### Create AES Key
 ```bash

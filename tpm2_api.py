@@ -10,8 +10,9 @@ import ctypes
 import ctypes.util
 import ssl
 import subprocess
+import hashlib
 import tempfile
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 
 TEMP_DECRYPTED_AES_FILE = "temp_decrypted_aes.json"
 TPM2_RSA_SCHEMES = {"rsassa", "rsapss"}
@@ -188,6 +189,47 @@ class TPM2API:
                 os.unlink(TEMP_DECRYPTED_AES_FILE)
             except OSError:
                 pass
+
+    @staticmethod
+    def _normalize_persistent_handle(handle: Union[int, str]) -> str:
+        """Return a TPM persistent handle as a lowercase hex string."""
+        if isinstance(handle, int):
+            return hex(handle)
+
+        normalized_handle = str(handle).strip()
+        if normalized_handle.lower().startswith("0x"):
+            return hex(int(normalized_handle, 16))
+        return hex(int(normalized_handle))
+
+    @staticmethod
+    def _file_status(file_path: Optional[str], artifact_type: str) -> Dict[str, Any]:
+        """Return availability details for a generated artifact file."""
+        if not file_path:
+            return {
+                "artifact_type": artifact_type,
+                "available": False,
+                "error": f"{artifact_type} path was not provided",
+            }
+
+        if not os.path.exists(file_path):
+            return {
+                "artifact_type": artifact_type,
+                "path": file_path,
+                "available": False,
+                "error": f"{artifact_type} file not found: {file_path}",
+            }
+
+        return {
+            "artifact_type": artifact_type,
+            "path": file_path,
+            "available": True,
+            "size_bytes": os.path.getsize(file_path),
+        }
+
+    @staticmethod
+    def _fingerprint_bytes(data: bytes) -> str:
+        """Return a SHA256 hex fingerprint for DER public-key bytes."""
+        return hashlib.sha256(data).hexdigest()
     
     def _run_command(self, cmd: List[str], input_data: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -693,6 +735,7 @@ class TPM2API:
                 "-sha256",
                 "-days", str(days),
                 "-subj", subject,
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
                 "-out", cert_file,
             ]
             if password:
@@ -756,6 +799,324 @@ class TPM2API:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def _public_key_der_from_file(self, file_path: str, artifact_type: str) -> Dict[str, Any]:
+        """
+        Extract public-key DER bytes from a PEM public key or certificate file.
+
+        Args:
+            file_path: PEM public key or certificate file
+            artifact_type: Either 'public_key' or 'certificate'
+
+        Returns:
+            Dictionary with DER bytes and fingerprint details
+        """
+        temp_public_pem = None
+        temp_public_der = None
+        try:
+            if artifact_type == "certificate":
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as temp_file:
+                    temp_public_pem = temp_file.name
+
+                cert_result = self._run_external_command([
+                    "openssl",
+                    "x509",
+                    "-in", file_path,
+                    "-pubkey",
+                    "-noout",
+                    "-out", temp_public_pem,
+                ])
+                if not cert_result["success"]:
+                    return cert_result
+                public_input_file = temp_public_pem
+            elif artifact_type == "public_key":
+                public_input_file = file_path
+            else:
+                return {"success": False, "error": f"Unsupported public artifact type: {artifact_type}"}
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".der") as temp_file:
+                temp_public_der = temp_file.name
+
+            der_result = self._run_external_command([
+                "openssl",
+                "pkey",
+                "-pubin",
+                "-in", public_input_file,
+                "-outform", "DER",
+                "-out", temp_public_der,
+            ])
+            if not der_result["success"]:
+                return der_result
+
+            with open(temp_public_der, "rb") as f:
+                public_der = f.read()
+
+            return {
+                "success": True,
+                "public_key_der": public_der,
+                "public_key_fingerprint": self._fingerprint_bytes(public_der),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            for temp_path in [temp_public_pem, temp_public_der]:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+
+    def _public_key_der_from_openssl_tpm_key(
+        self,
+        private_key_file: str,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Export public-key DER bytes from an OpenSSL TPM-provider private key reference.
+
+        A successful export proves the TSS2 key reference is loadable through the
+        configured TPM/provider stack. It does not expose the private key material.
+        """
+        temp_public_pem = None
+        temp_public_der = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as temp_file:
+                temp_public_pem = temp_file.name
+
+            export_cmd = [
+                "openssl",
+                "pkey",
+                "-provider", "tpm2",
+                "-provider", "default",
+                "-in", private_key_file,
+                "-pubout",
+                "-out", temp_public_pem,
+            ]
+            if password:
+                export_cmd.extend(["-passin", f"pass:{password}"])
+
+            export_result = self._run_external_command(export_cmd)
+            if not export_result["success"]:
+                return export_result
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".der") as temp_file:
+                temp_public_der = temp_file.name
+
+            der_result = self._run_external_command([
+                "openssl",
+                "pkey",
+                "-pubin",
+                "-in", temp_public_pem,
+                "-outform", "DER",
+                "-out", temp_public_der,
+            ])
+            if not der_result["success"]:
+                return der_result
+
+            with open(temp_public_der, "rb") as f:
+                public_der = f.read()
+
+            return {
+                "success": True,
+                "public_key_der": public_der,
+                "public_key_fingerprint": self._fingerprint_bytes(public_der),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            for temp_path in [temp_public_pem, temp_public_der]:
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+
+    def check_key_available(
+        self,
+        key_info: Optional[Dict[str, Any]] = None,
+        *,
+        context_file: Optional[str] = None,
+        persistent_handle: Optional[Union[int, str]] = None,
+        private_key_file: Optional[str] = None,
+        public_key_file: Optional[str] = None,
+        certificate_file: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Check whether generated key artifacts are available and TPM-backed.
+
+        This method supports the key result dictionaries returned by this API as
+        well as explicit file/handle arguments. It treats public keys and
+        certificates as generated artifacts, then verifies TPM storage only when
+        a TPM-readable context, persistent handle, or OpenSSL TSS2 private key
+        reference is available.
+
+        Args:
+            key_info: Optional generated-key metadata/result dictionary
+            context_file: TPM context file to probe with tpm2_readpublic
+            persistent_handle: TPM persistent handle to probe with tpm2_readpublic
+            private_key_file: OpenSSL TPM-provider TSS2 private key reference
+            public_key_file: Generated PEM public key to check and compare
+            certificate_file: Generated PEM certificate to check and compare
+            password: Optional passphrase for encrypted TSS2 key references
+
+        Returns:
+            Dictionary with artifact availability, TPM probe results, and an
+            overall `stored_in_tpm` boolean.
+        """
+        try:
+            key_info = key_info or {}
+            key_metadata = key_info.get("key_metadata") if isinstance(key_info.get("key_metadata"), dict) else {}
+
+            def first_key_value(*field_names: str) -> Any:
+                for field_name in field_names:
+                    if key_info.get(field_name) is not None:
+                        return key_info.get(field_name)
+                    if key_metadata.get(field_name) is not None:
+                        return key_metadata.get(field_name)
+                return None
+
+            context_file = context_file or first_key_value("context_file")
+            persistent_handle = persistent_handle or first_key_value("persistent_handle")
+            private_key_file = (
+                private_key_file
+                or first_key_value("private_key_file", "tss2_private_key_file")
+            )
+            public_blob_file = first_key_value("public_file")
+            public_key_file = public_key_file or first_key_value("public_key_file")
+            certificate_file = (
+                certificate_file
+                or first_key_value("certificate_file", "cert_file")
+            )
+
+            artifact_checks: Dict[str, Any] = {}
+            tpm_checks: Dict[str, Any] = {}
+            comparison_checks: Dict[str, Any] = {}
+            tpm_public_fingerprint = None
+
+            for artifact_type, path in [
+                ("context_file", context_file),
+                ("tss2_private_key_file", private_key_file),
+                ("public_file", public_blob_file),
+                ("public_key_file", public_key_file),
+                ("certificate_file", certificate_file),
+            ]:
+                if path:
+                    artifact_checks[artifact_type] = self._file_status(path, artifact_type)
+
+            if context_file:
+                context_result = self._run_command(["tpm2_readpublic", "-c", context_file])
+                tpm_checks["context_file"] = {
+                    "reference": context_file,
+                    "stored_in_tpm": context_result["success"],
+                }
+                if context_result["success"]:
+                    tpm_checks["context_file"]["readpublic_output"] = context_result.get("output", "")
+                else:
+                    tpm_checks["context_file"]["error"] = context_result.get("error", "Unknown error")
+
+            if persistent_handle is not None:
+                normalized_handle = self._normalize_persistent_handle(persistent_handle)
+                handle_result = self._run_command(["tpm2_readpublic", "-c", normalized_handle])
+                tpm_checks["persistent_handle"] = {
+                    "reference": normalized_handle,
+                    "stored_in_tpm": handle_result["success"],
+                }
+                if handle_result["success"]:
+                    tpm_checks["persistent_handle"]["readpublic_output"] = handle_result.get("output", "")
+                else:
+                    tpm_checks["persistent_handle"]["error"] = handle_result.get("error", "Unknown error")
+
+            if private_key_file:
+                if not os.path.exists(private_key_file):
+                    tpm_checks["tss2_private_key_file"] = {
+                        "reference": private_key_file,
+                        "stored_in_tpm": False,
+                        "error": f"TSS2 private key file not found: {private_key_file}",
+                    }
+                else:
+                    with open(private_key_file, "rb") as f:
+                        private_key_header = f.read(256)
+                    is_tss2_pem = b"TSS2 PRIVATE KEY" in private_key_header
+                    tss2_result = self._public_key_der_from_openssl_tpm_key(private_key_file, password)
+                    tpm_checks["tss2_private_key_file"] = {
+                        "reference": private_key_file,
+                        "stored_in_tpm": tss2_result["success"],
+                        "format_hint": "tss2_private_key" if is_tss2_pem else "unknown_or_encrypted",
+                    }
+                    if tss2_result["success"]:
+                        tpm_public_fingerprint = tss2_result["public_key_fingerprint"]
+                        tpm_checks["tss2_private_key_file"]["public_key_fingerprint"] = tpm_public_fingerprint
+                    else:
+                        tpm_checks["tss2_private_key_file"]["error"] = tss2_result.get("error", "Unknown error")
+
+            if public_key_file and os.path.exists(public_key_file):
+                public_result = self._public_key_der_from_file(public_key_file, "public_key")
+                comparison_checks["public_key_file"] = {
+                    "reference": public_key_file,
+                    "valid_public_key": public_result["success"],
+                }
+                if public_result["success"]:
+                    public_fingerprint = public_result["public_key_fingerprint"]
+                    comparison_checks["public_key_file"]["public_key_fingerprint"] = public_fingerprint
+                    if tpm_public_fingerprint:
+                        comparison_checks["public_key_file"]["matches_tpm_key"] = (
+                            public_fingerprint == tpm_public_fingerprint
+                        )
+                else:
+                    comparison_checks["public_key_file"]["error"] = public_result.get("error", "Unknown error")
+
+            if certificate_file and os.path.exists(certificate_file):
+                cert_result = self._public_key_der_from_file(certificate_file, "certificate")
+                comparison_checks["certificate_file"] = {
+                    "reference": certificate_file,
+                    "valid_certificate": cert_result["success"],
+                }
+                if cert_result["success"]:
+                    cert_fingerprint = cert_result["public_key_fingerprint"]
+                    comparison_checks["certificate_file"]["public_key_fingerprint"] = cert_fingerprint
+                    if tpm_public_fingerprint:
+                        comparison_checks["certificate_file"]["matches_tpm_key"] = (
+                            cert_fingerprint == tpm_public_fingerprint
+                        )
+                else:
+                    comparison_checks["certificate_file"]["error"] = cert_result.get("error", "Unknown error")
+
+            available = all(check.get("available", False) for check in artifact_checks.values())
+            stored_in_tpm = any(check.get("stored_in_tpm", False) for check in tpm_checks.values())
+
+            mismatch_errors = []
+            for artifact_name, check in comparison_checks.items():
+                if check.get("matches_tpm_key") is False:
+                    mismatch_errors.append(f"{artifact_name} does not match the TPM-backed key")
+                if check.get("valid_public_key") is False:
+                    mismatch_errors.append(f"{artifact_name} is not a valid public key")
+                if check.get("valid_certificate") is False:
+                    mismatch_errors.append(f"{artifact_name} is not a valid certificate")
+
+            if not tpm_checks:
+                mismatch_errors.append(
+                    "No TPM context, persistent handle, or TSS2 private key reference was provided; "
+                    "public-only artifacts cannot prove TPM storage"
+                )
+            success = available and stored_in_tpm and not mismatch_errors
+
+            result = {
+                "success": success,
+                "available": available,
+                "stored_in_tpm": stored_in_tpm,
+                "artifact_checks": artifact_checks,
+                "tpm_checks": tpm_checks,
+                "comparison_checks": comparison_checks,
+                "action": "key_availability_checked",
+            }
+
+            if mismatch_errors:
+                result["error"] = "; ".join(mismatch_errors)
+
+            return result
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def sign_with_openssl_tls_key(
         self,
         private_key_file: str,
@@ -764,6 +1125,7 @@ class TPM2API:
         scheme: str = "rsassa",
         hash_alg: str = "sha256",
         input_kind: str = "message",
+        salt_length: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Sign data using a TPM-backed OpenSSL TLS key reference file.
@@ -774,7 +1136,8 @@ class TPM2API:
             password: Optional passphrase protecting the key reference file
             scheme: RSA signing scheme ("rsassa" or "rsapss")
             hash_alg: Hash algorithm to use
-            input_kind: Currently supports "message" only
+            input_kind: "message" to hash and sign data, or "digest" to sign a precomputed digest
+            salt_length: Optional RSA-PSS salt length for digest signing
 
         Returns:
             Dictionary containing a hex-encoded signature
@@ -790,8 +1153,8 @@ class TPM2API:
             if hash_alg not in TPM2_HASH_ALGORITHMS:
                 return {"success": False, "error": f"Unsupported hash algorithm: {hash_alg}. Use one of {sorted(TPM2_HASH_ALGORITHMS)}"}
 
-            if input_kind != "message":
-                return {"success": False, "error": "OpenSSL TLS key signing currently supports input_kind='message' only"}
+            if input_kind not in {"message", "digest"}:
+                return {"success": False, "error": "input_kind must be 'message' or 'digest'"}
 
             decoded_data = base64.b64decode(data)
 
@@ -803,28 +1166,53 @@ class TPM2API:
                 temp_sig_path = temp_sig_file.name
 
             try:
-                cmd = [
-                    'openssl',
-                    'dgst',
-                    f'-{hash_alg}',
-                    '-provider', 'tpm2',
-                    '-provider', 'default',
-                    '-sign', private_key_file,
-                    '-out', temp_sig_path,
-                ]
-
-                if scheme == "rsapss":
-                    cmd.extend([
-                        '-sigopt', 'rsa_padding_mode:pss',
-                        '-sigopt', 'rsa_pss_saltlen:-1',
-                    ])
+                if input_kind == "digest":
+                    cmd = [
+                        'openssl',
+                        'pkeyutl',
+                        '-sign',
+                        '-provider', 'tpm2',
+                        '-provider', 'default',
+                        '-inkey', private_key_file,
+                        '-in', temp_data_path,
+                        '-out', temp_sig_path,
+                    ]
+                    if scheme == "rsapss":
+                        cmd.extend([
+                            '-pkeyopt', 'rsa_padding_mode:pss',
+                            '-pkeyopt', f'digest:{hash_alg}',
+                            '-pkeyopt', f'rsa_pss_saltlen:{salt_length if salt_length is not None else -1}',
+                        ])
+                    else:
+                        cmd.extend([
+                            '-pkeyopt', 'rsa_padding_mode:pkcs1',
+                            '-pkeyopt', f'digest:{hash_alg}',
+                        ])
+                    if password:
+                        cmd.extend(['-passin', f'pass:{password}'])
                 else:
-                    cmd.extend(['-sigopt', 'rsa_padding_mode:pkcs1'])
+                    cmd = [
+                        'openssl',
+                        'dgst',
+                        f'-{hash_alg}',
+                        '-provider', 'tpm2',
+                        '-provider', 'default',
+                        '-sign', private_key_file,
+                        '-out', temp_sig_path,
+                    ]
 
-                if password:
-                    cmd.extend(['-passin', f'pass:{password}'])
+                    if scheme == "rsapss":
+                        cmd.extend([
+                            '-sigopt', 'rsa_padding_mode:pss',
+                            '-sigopt', f'rsa_pss_saltlen:{salt_length if salt_length is not None else -1}',
+                        ])
+                    else:
+                        cmd.extend(['-sigopt', 'rsa_padding_mode:pkcs1'])
 
-                cmd.append(temp_data_path)
+                    if password:
+                        cmd.extend(['-passin', f'pass:{password}'])
+
+                    cmd.append(temp_data_path)
 
                 result = self._run_external_command(cmd)
                 if not result["success"]:
@@ -845,6 +1233,7 @@ class TPM2API:
                     "scheme": scheme,
                     "hash_alg": hash_alg,
                     "input_kind": input_kind,
+                    "salt_length": salt_length,
                     "action": "openssl_tls_data_signed",
                 }
             finally:
@@ -858,6 +1247,132 @@ class TPM2API:
                     pass
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_openssl_provider_key_info(
+        self,
+        private_key_file: Optional[str] = None,
+        public_key_file: Optional[str] = None,
+        certificate_file: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return metadata a REST-backed OpenSSL provider needs for a TPM TLS key.
+        """
+        temp_public_pem = None
+        try:
+            public_key_text = None
+            source = None
+
+            if public_key_file and os.path.exists(public_key_file):
+                with open(public_key_file, "r", encoding="utf-8") as f:
+                    public_key_text = f.read().strip()
+                source = public_key_file
+            elif certificate_file and os.path.exists(certificate_file):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as temp_file:
+                    temp_public_pem = temp_file.name
+                cert_result = self._run_external_command([
+                    "openssl",
+                    "x509",
+                    "-in", certificate_file,
+                    "-pubkey",
+                    "-noout",
+                    "-out", temp_public_pem,
+                ])
+                if not cert_result["success"]:
+                    return cert_result
+                with open(temp_public_pem, "r", encoding="utf-8") as f:
+                    public_key_text = f.read().strip()
+                source = certificate_file
+            elif private_key_file:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as temp_file:
+                    temp_public_pem = temp_file.name
+                cmd = [
+                    "openssl",
+                    "pkey",
+                    "-provider", "tpm2",
+                    "-provider", "default",
+                    "-in", private_key_file,
+                    "-pubout",
+                    "-out", temp_public_pem,
+                ]
+                if password:
+                    cmd.extend(["-passin", f"pass:{password}"])
+                pub_result = self._run_external_command(cmd)
+                if not pub_result["success"]:
+                    return pub_result
+                with open(temp_public_pem, "r", encoding="utf-8") as f:
+                    public_key_text = f.read().strip()
+                source = private_key_file
+            else:
+                return {
+                    "success": False,
+                    "error": "Provide private_key_file, public_key_file, or certificate_file",
+                }
+
+            if not public_key_text:
+                return {"success": False, "error": f"Could not read public key from {source}"}
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pem") as temp_file:
+                temp_info_public = temp_file.name
+                temp_file.write(public_key_text.encode("utf-8"))
+
+            try:
+                info_result = self._run_external_command([
+                    "openssl",
+                    "pkey",
+                    "-pubin",
+                    "-in", temp_info_public,
+                    "-text",
+                    "-noout",
+                ])
+                key_size = None
+                key_type = "unknown"
+                if info_result["success"]:
+                    output = info_result.get("output", "")
+                    if "RSA Public-Key:" in output or "Public-Key:" in output:
+                        key_type = "rsa"
+                    for line in output.splitlines():
+                        if "Public-Key:" in line and "(" in line and " bit" in line:
+                            size_part = line.split("(", 1)[1].split(" bit", 1)[0]
+                            try:
+                                key_size = int(size_part)
+                            except ValueError:
+                                pass
+                            break
+            finally:
+                try:
+                    os.unlink(temp_info_public)
+                except OSError:
+                    pass
+
+            body_lines = []
+            for line in public_key_text.splitlines():
+                normalized = line.strip()
+                if normalized and not normalized.startswith("-----BEGIN") and not normalized.startswith("-----END"):
+                    body_lines.append(normalized)
+
+            return {
+                "success": True,
+                "private_key_file": private_key_file,
+                "public_key_file": public_key_file,
+                "certificate_file": certificate_file,
+                "public_key_source": source,
+                "public_key_pem": public_key_text,
+                "public_key": "".join(body_lines),
+                "key_type": key_type,
+                "key_size": key_size,
+                "supported_schemes": sorted(TPM2_RSA_SCHEMES) if key_type == "rsa" else [],
+                "supported_hashes": sorted(TPM2_HASH_ALGORITHMS),
+                "action": "openssl_provider_key_info",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        finally:
+            if temp_public_pem and os.path.exists(temp_public_pem):
+                try:
+                    os.unlink(temp_public_pem)
+                except OSError:
+                    pass
     
     def create_key(self, parent_context: str, password: str, key_type: str = "rsa",
                    public_file: str = "key.pub", private_file: str = "key.priv",
